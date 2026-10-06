@@ -392,6 +392,50 @@ indexer  = 38% × 50% + 62%   = 81.2%   (실측 80.4%)
    - 이슈 원인이 player 코드가 아니라 그룹 설정일 수도 있다 (예: background로 분류돼 `cpu.max`에 걸림).
    - webOS의 cgroup 구성 방식(systemd unit인지, 별도 관리자인지)은 버전·플랫폼마다 다르므로 실제 보드에서 확인할 것. (→ 보드 특성 체크리스트 3번 "player의 cgroup과 제한")
 
+**Q. Android는 HAL 아래에서 도는 vsync 기반 BSP thread의 우선순위를 특별 관리하나? 아니면 SoC 의존이라 플랫폼은 관여하지 않고 SoC 벤더가 nice/cgroup 값을 가이드하나?**
+
+> Android 구조에 대한 일반 지식 기반 설명. 세부 값·파일명은 Android 버전과 SoC마다 다르므로 실제 적용 시 해당 소스·문서로 확인할 것.
+
+플랫폼이 관여하지 않는 것은 아니다. **BSP thread 하나하나의 nice 값을 플랫폼이 정하지는 않고, 정하는 틀과 결과 기준을 제공한다.**
+
+1. **역할 분담**
+
+   | 계층 | 정하는 것 |
+   | --- | --- |
+   | 플랫폼 (Google, AOSP) | 틀(cgroup 분류, task profile, Power HAL 인터페이스), framework thread 우선순위, 성능 요구사항(CTS/CDD) |
+   | SoC 벤더 (Qualcomm, MediaTek 등) | HAL process·thread 우선순위, 자체 성능 관리 HAL/daemon, kernel scheduler 확장 |
+   | 제조사 (OEM) | SoC 벤더 설정을 제품에 맞게 조정 |
+
+2. **플랫폼이 직접 챙기는 것**
+   - framework thread 우선순위를 코드로 고정: SurfaceFlinger main thread는 시작 시 스스로 `SCHED_FIFO`. 앱 UI thread와 RenderThread는 nice 음수(display 우선순위). 오디오 FastMixer 등 저지연 thread는 `SCHED_FIFO` (framework의 스케줄링 정책 서비스가 대신 설정).
+   - cgroup 분류(top-app, foreground, background 등)를 정의하고, 앱이 앞뒤로 전환될 때 ActivityManager가 process를 옮긴다. 그룹마다 cpuset과 uclamp가 걸려 있다.
+   - **task profile** (Android 10+): `cgroups.json`, `task_profiles.json`에 "HighPerformance", "ProcessCapacityHigh" 같은 프로필("어느 cgroup에 어떤 값") 정의 → init rc에서 `task_profiles <이름>`으로 적용. 벤더는 `/vendor/etc/task_profiles.json`으로 덮어쓸 수 있다.
+   - **결과 기준**: CDD, CTS, Media Performance Class는 "nice 몇"이 아니라 "frame drop 몇 개 이하", "오디오 지연 몇 ms 이하" 같은 결과를 요구한다.
+
+3. **벤더 BSP thread는 벤더가 이 틀 안에서 관리**
+   - HAL process는 벤더 init rc로 시작되고, 여기서 우선순위를 정한다.
+
+     ```
+     service vendor.media.c2 /vendor/bin/hw/...-service
+         class hal
+         user mediacodec
+         task_profiles ProcessCapacityHigh     # cgroup/성능 프로필
+         capabilities SYS_NICE                 # 스스로 우선순위를 올릴 권한
+         rlimit rtprio 10 10                   # SCHED_FIFO 우선순위 상한
+     ```
+
+     개별 thread는 HAL 코드가 직접 `setpriority`/`sched_setscheduler`로 올린다 (예: composer HAL의 vsync thread는 보통 `SCHED_FIFO`).
+   - SoC 벤더 성능 관리 HAL(Qualcomm perf HAL, MediaTek power/perf 서비스 등): "영상 재생 중" 같은 hint를 받으면 CPU 주파수, uclamp, core 배치를 동적으로 조정.
+   - **ADPF** (Android 12+, Android Dynamic Performance Framework): thread 묶음의 frame당 목표 시간과 실제 시간을 Power HAL에 보고 → 성능 보장을 동적으로 조정. renderer 같은 thread를 위한 메커니즘.
+   - kernel scheduler 확장: Qualcomm WALT 등.
+   - SoC 벤더의 BSP thread nice/cgroup 가이드는 BSP 릴리스·tuning 문서로 제조사에 전달되며 보통 비공개다.
+
+4. **webOS 플레이어에서 확인할 질문** (webOS 내부 구조는 미확인)
+   1. 플랫폼: media pipeline thread(demux, decode, render, audio)의 우선순위와 cgroup을 플랫폼 코드가 정하나, 기본값(nice 0)인가?
+   2. SoC 벤더: 디코더·디스플레이 BSP thread가 이미 `SCHED_FIFO`인가? 그렇다면 플랫폼 thread는 nice 조정만으로 그 thread를 이길 수 없다 (RT가 일반 thread보다 항상 먼저 실행).
+   3. 동적 조정: 재생 시작 시 CPU 주파수나 core 배치를 올려 주는 장치(Power HAL류)가 있나?
+   - 첫 확인: 재생 중 `ps -eLo tid,cls,rtprio,ni,psr,comm` (정책 TS/FF/RR, RT 우선순위, nice, 실행 CPU)
+
 ## 현업 적용 포인트 (webOS 미디어 플레이어)
 
 - **CPU 사용률이 아니라 schedstat의 `wait_ms`(runqueue 대기)와 비자발적 context switch를 본다.** renderer는 CPU의 20%만 쓰는데도 frame마다 3ms씩 대기했다. `top`으로는 보이지 않는다.
