@@ -31,7 +31,7 @@
 
 ## 사전 예측
 
-**예측 1** (기본 조건 Max delay): 둘 다 nice 0이면 CFS/EEVDF가 CPU를 반반 나눈다. 강의 환경(HZ=250, tick 4ms) 기준으로는 renderer가 깨어나도 indexer의 slice가 끝날 때까지 수 ms 기다릴 수 있다.
+**예측 1** (기본 조건 Max delay): 둘 다 nice 0이면 CFS/EEVDF가 **둘 다 runnable인 구간에서** CPU 시간을 반반 나눈다 (아래 Q&A "CPU를 반반 나눈다는 기준" 참고). 강의 환경(HZ=250, tick 4ms) 기준으로는 renderer가 깨어나도 indexer의 slice가 끝날 때까지 수 ms 기다릴 수 있다.
 → 이 PC는 **HZ=1000 (tick 1ms)**, kernel 7.0 **EEVDF** scheduler, `PREEMPT_LAZY`라서 강의보다 지연이 작을 것으로 예상.
 
 **예측 2** (조치별):
@@ -134,6 +134,35 @@ struct timespec next = { .tv_sec  = t0 / 1000000000,     // L263
 - frame 0은 잠들지 않고 바로 시작한다 (첫 `late` ≈ 0).
 - `next`는 항상 **다음 frame의 `expected`와 같다** → `late = start - expected` = "깨워 달라고 한 시각보다 얼마나 늦게 실행됐나".
 - `next`는 실제로 깨어난 시각이 아니라 이전 `next`에 주기를 더해 갱신한다. 그래서 한 번 늦게 깨어나도 지연이 다음 frame으로 쌓이지 않는다.
+
+**Q. "CPU를 반반 나눈다"는 사이클 수 기준인가, 실행 시간 기준인가?**
+
+**실행 시간(ns) 기준이다.** 그리고 "반반"은 **두 task가 동시에 runnable인 구간에서만** 성립한다.
+
+1. **기준은 실행 시간**: scheduler는 task가 CPU를 잡고 있던 시간을 ns 단위로 잰다. 사이클·명령어 수는 보지 않는다.
+   - 같은 1ms라도 4.8GHz와 800MHz는 처리량이 6배 다르지만 scheduler에게는 같은 1ms다. cache miss로 멈춘 시간도 실행 시간에 포함된다.
+   - 기본 조건에서 경쟁 시 `rounds`가 단독보다 2.7배 많았던 것이 그 예다 (시간은 같아도 주파수 차이로 일한 양이 다름).
+2. **nice → weight 비율로 나눈다**: nice 0 = 1024, nice 10 ≈ 110 (한 단계에 약 1.25배).
+   - runnable task끼리 weight 비율대로 시간을 나눈다. nice 0 둘 = 50:50, 조치 A(indexer nice 10) = 1024:110 ≈ 90:10.
+   - 자고 있는 task는 몫을 나누는 대상에서 빠진다. renderer가 주기의 75%를 자는 동안은 indexer가 CPU를 혼자 쓴다 → 전체 평균은 renderer 약 20%, indexer 약 86%.
+   - **측정값으로 확인**: renderer가 frame 하나를 처리하는 동안 `exec_ms` 1936 / `wait_ms` 1938 → frame당 실행 3.2ms, 대기 3.2ms로 정확히 50:50. 4ms 작업이 6.4ms로 늘어난 이유는, 선점당한 사이에 끝나야 할 시각이 지나고 CPU를 다시 받은 뒤에야 끝난 것을 알아차리기 때문이다.
+3. **CFS → EEVDF**
+   - vruntime(가상 실행 시간) = 실제 실행 시간 × 1024 / weight의 누적값. weight가 작으면 같은 시간을 써도 빨리 늘어난다.
+   - CFS (~6.5): vruntime이 가장 작은 task를 실행한다.
+   - EEVDF (6.6~, 이 PC의 7.0도 해당):
+     - lag = 받아야 할 몫 − 실제로 받은 몫. lag ≥ 0인 task만 실행 후보.
+     - 후보 중 가상 deadline(받은 몫 + slice ÷ weight)이 가장 이른 task를 고른다.
+     - 자다 깬 renderer는 몫을 덜 받아 lag이 양수 → 깨어나자마자 후보가 되고 indexer를 선점할 수 있다.
+     - slice 기본값 = 0.75ms × (1 + log₂ CPU 수) → CPU 8개면 약 3ms (기본 scaling 설정 기준).
+4. **tick(HZ)이 지연을 좌우하는 이유**: task를 바꿀지 확인하는 시점은 ① wakeup 순간(우선이면 즉시 선점) ② tick마다(현재 task가 slice를 다 썼는지). ①에서 선점되지 않으면 다음 tick까지 기다린다.
+
+   | | 강의 환경 | 이 PC |
+   | --- | --- | --- |
+   | HZ | 250 → tick 4ms | **1000 → tick 1ms** |
+   | 예상 최대 wakeup 지연 | 수 ms (tick + 남은 slice) | 1ms 안팎 |
+
+   - 강의 문장 "indexer의 slice가 끝날 때까지 수 ms 기다릴 수 있다" = ①에서 선점하지 못하고 4ms tick에서 slice 소진이 확인될 때까지 기다리는 경우.
+   - 이 PC에서 `late_p99u`가 71µs인 것은 1ms tick과 EEVDF의 즉시 선점 때문으로 해석된다. 대신 일하는 도중에 slice 단위로 indexer와 번갈아 실행돼 지연이 `wait_ms`(frame당 3.2ms)로 나타났다. → 단계 2 perf sched timehist로 실제 선점 시점을 확인할 것.
 
 **실제 플레이어와 다른 점**
 - 실제 render thread는 timer 대신 vsync, 디코더 출력 같은 이벤트를 기다리는 경우가 많다.
