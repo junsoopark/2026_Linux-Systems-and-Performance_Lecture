@@ -287,6 +287,43 @@ renderer 0.2ms 실행 후 잠듦  +0.2        +0.1          -0.1   → delayed d
 - 예전 CFS에는 **sleeper credit**(깨어난 task의 vruntime을 최소값보다 앞당겨 우선권 부여)이 있었다. EEVDF는 이를 없애고 lag 기반으로 바꿨다.
 - **미해결**: lag 0이면 깨어난 renderer와 indexer의 deadline이 비슷해서 이론상 즉시 선점하지 못할 수도 있다. 그런데 `late_p99u` 71µs → 대부분 즉시 CPU를 받았다. kernel 7.0 scheduler 기능(즉시 선점 관련 옵션, 선점 방식) 때문일 가능성 → `sudo cat /sys/kernel/debug/sched/{base_slice_ns,preempt,features}`와 timehist로 확인할 것.
 
+**Q. 가상 시간 계산식은?**
+
+`kernel/sched/fair.c` 기준 (w = weight, nice 0 = 1024, Δexec = 실제 실행 시간):
+
+| 값 | 계산식 | 의미 | kernel |
+| --- | --- | --- | --- |
+| task의 가상 실행 시간 v_i | v_i += Δexec × 1024 / w_i | weight가 작을수록 빨리 늘어남 | `calc_delta_fair()` |
+| runqueue 가상 시간 V | V = Σ(w_i × v_i) / Σw_i | runnable task들의 v를 weight로 가중평균 | `avg_vruntime()` |
+| lag | lag_i = w_i × (V − v_i) | 0보다 크면 몫을 덜 받은 상태 | `se->vlag` (= V − v_i) |
+| 가상 deadline | vd_i = v_i + slice × 1024 / w_i | 후보 중 가장 이른 task 실행 | `update_deadline()` |
+
+- 실행 후보 조건: lag ≥ 0 ⇔ v_i ≤ V
+- V의 진행 속도: 실행 중인 task의 v가 Δ만큼 늘면 ΔV = w_cur × Δv_cur / Σw. weight가 같은 task n개면 ΔV = Δ/n.
+  - 앞의 lag 표에서 renderer 3ms 실행 → V +1.5인 이유 (n = 2).
+  - task가 하나뿐이면 V = 그 task의 v → lag은 항상 0.
+
+**Q. renderer는 75%는 쉬고, 25%를 놓고 50:50으로 경쟁한 것인가?**
+
+개념은 맞다: **runnable 구간에서만 경쟁하고, 그 안에서는 50:50.** 다만 구간 길이가 25%가 아니다. 경쟁 때문에 일하는 구간이 4ms에서 6.4ms로 늘어났다.
+
+| frame 하나 (16.67ms) | 의도 (경쟁 없음) | 실제 (경쟁) |
+| --- | --- | --- |
+| runnable 구간 | 4ms (24%) | **6.4ms (38%)** |
+| └ renderer 실행 | 4ms | 3.2ms (50%) |
+| └ indexer 실행 | 0 | 3.2ms (50%) |
+| 잠든 구간 (indexer 혼자) | 12.67ms (76%) | **10.27ms (62%)** |
+
+모델 검증:
+
+```
+renderer = 38% × 50%         = 19.2%   (실측 19.4%)
+indexer  = 38% × 50% + 62%   = 81.2%   (실측 80.4%)
+```
+
+- 정리: renderer는 frame마다 6.4ms 동안 runnable이었고, 그 구간을 indexer와 50:50으로 나눴다. 나머지 62%는 잠들어 있었고 그동안 indexer가 CPU를 혼자 썼다.
+- 작업이 "CPU 시간 4ms만큼의 일"(실제 decode/render에 가까움)이었다면, 50:50으로 4ms를 채우는 데 8ms가 걸려 runnable 구간이 48%가 되고, frame 작업 시간도 두 배가 됐을 것이다.
+
 ## 현업 적용 포인트 (webOS 미디어 플레이어)
 
 - **CPU 사용률이 아니라 schedstat의 `wait_ms`(runqueue 대기)와 비자발적 context switch를 본다.** renderer는 CPU의 20%만 쓰는데도 frame마다 3ms씩 대기했다. `top`으로는 보이지 않는다.
