@@ -199,23 +199,7 @@ printf(..., (t1 - t0) / accesses);  // 평균 ns/access
 
 ## 실습 3. Scheduling 지연 진단
 
-### 사전 예측
-
-### 실행 및 관측
-
-| 조건 | renderer late_p99u | miss | perf Max delay (ms) | indexer cpu_ms |
-| --- | --- | --- | --- | --- |
-| 기본 (둘 다 nice 0, CPU 0) | | | | |
-| A: indexer nice 10 | | | | |
-| B: lab/bg cpu.weight 20 | | | | |
-| C: lab/bg cpu.max 30% | | | | |
-| D: lab/bg cpuset 1 | | | | |
-
-### 확인 질문 (Q3.1 ~ Q3.3)
-
-### 질문 & 추가 테스트
-
-### 현업 적용 포인트
+→ 별도 문서로 정리: [`lab3_scheduling_record.md`](lab3_scheduling_record.md) (현업 프로파일링 적용 목적)
 
 ---
 

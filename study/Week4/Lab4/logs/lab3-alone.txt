@@ -1,0 +1,6 @@
+### alone (renderer only, CPU 0)
+pid=852652 name=renderer duration=10.0s threads=1
+TIDS=852654
+idx spec                           cg         tid  cpu   cpu_ms  exec_ms  wait_ms pcount   vol  invol     rounds    iters late_p99u   miss
+0   periodic:16667:4000,cpu=0      -       852654    0   2421.7   2421.7     10.7    676   600     76     195046      600     264.1      0
+total cpu_ms=2421.7  (0.24 CPUs over 10.0s)
