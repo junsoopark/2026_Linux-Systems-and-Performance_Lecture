@@ -1,0 +1,4 @@
+# 빌드 산출물 (복사본 작업 공간)
+Week*/lab/bin/
+Week*/assignment/**/bin/
+perf.data*
