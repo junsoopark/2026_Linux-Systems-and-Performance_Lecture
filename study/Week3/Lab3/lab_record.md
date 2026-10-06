@@ -1,4 +1,6 @@
-# Week 2 Lab 기록
+# Week 3 Lab 기록
+
+> 원본 자료: `../../../Week3/Lab3/` (안내서: `Lab3_instructions.md`)
 
 ## 환경
 - Kernel: 7.0.0-15-generic

@@ -1,6 +1,6 @@
-# Week 4 과제
+# Week 2 과제
 
-> 과제 문서: `../../Week4/Assignment4/`
+> 과제 문서: `../../../Week2/Assignment2/`
 
 ## 요구사항 요약
 

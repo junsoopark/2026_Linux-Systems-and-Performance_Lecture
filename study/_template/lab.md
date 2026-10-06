@@ -1,5 +1,7 @@
 # Week {{N}} Lab 기록
 
+> 원본 자료: `../../../Week{{N}}/Lab{{N}}/` (안내서: `Lab{{N}}_instructions.md`)
+
 ## 환경
 - Kernel: {{KERNEL}}
 - CPU: {{CPU}}

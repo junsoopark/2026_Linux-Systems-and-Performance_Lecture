@@ -1,6 +1,6 @@
 # Week {{N}} 과제
 
-> 과제 문서: `../../Week{{N}}/Assignment{{N}}/`
+> 과제 문서: `../../../Week{{N}}/Assignment{{N}}/`
 
 ## 요구사항 요약
 

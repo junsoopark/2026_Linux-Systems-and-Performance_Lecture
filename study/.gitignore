@@ -1,4 +1,7 @@
-# 빌드 산출물 (복사본 작업 공간)
-Week*/lab/bin/
-Week*/assignment/**/bin/
+# 빌드 산출물 (원본 Makefile이 bin/ 에 생성)
+Week*/Lab*/bin/
+Week*/Assignment*/**/bin/
 perf.data*
+
+# 실습 관측 결과는 커밋 (루트 .gitignore의 logs/ 무시 규칙 해제)
+!Week*/Lab*/logs/
