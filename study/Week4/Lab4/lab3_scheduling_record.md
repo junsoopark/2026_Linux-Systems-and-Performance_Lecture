@@ -321,8 +321,39 @@ renderer = 38% × 50%         = 19.2%   (실측 19.4%)
 indexer  = 38% × 50% + 62%   = 81.2%   (실측 80.4%)
 ```
 
-- 정리: renderer는 frame마다 6.4ms 동안 runnable이었고, 그 구간을 indexer와 50:50으로 나눴다. 나머지 62%는 잠들어 있었고 그동안 indexer가 CPU를 혼자 썼다.
+- 정리: renderer는 frame마다 6.4ms 동안 runnable(= 실행 3.2ms + runqueue 대기 3.2ms)이었고, 그 구간을 indexer와 50:50으로 나눴다. 나머지 62%는 잠들어 있었고 그동안 indexer가 CPU를 혼자 썼다.
 - 작업이 "CPU 시간 4ms만큼의 일"(실제 decode/render에 가까움)이었다면, 50:50으로 4ms를 채우는 데 8ms가 걸려 runnable 구간이 48%가 되고, frame 작업 시간도 두 배가 됐을 것이다.
+
+**Q. "6.4ms 동안 runnable"이 아니라, 3.2 실행 + 3.2 대기 후 4ms를 채우기 위해 남은 시간을 더 실행해야 하지 않나?**
+
+아니다. 6.4ms 안에 실행과 대기가 이미 모두 들어 있고, 남은 시간을 채우지 않는다.
+
+1. **runnable = 실행 중 + 대기 중**: Linux의 runnable(`TASK_RUNNING`)은 CPU에서 실행 중(exec)과 runqueue에서 CPU를 기다리는 중(wait)을 함께 가리킨다. sleeping과 구분하는 말이다. → 6.4ms = exec 3.2 + wait 3.2.
+2. **`work_item`은 벽시계 기준 4ms**: "CPU를 4ms 쓸 때까지"가 아니라 "시작 시각부터 4ms가 지날 때까지".
+
+   ```c
+   end = now_ns() + 4ms;                        // 끝나는 시각을 벽시계로 먼저 정함
+   do { ...계산... } while (now_ns() < end);    // 지금 시각만 비교
+   ```
+
+   ```
+   t=0      시작, end = 4ms로 정해짐
+   t=0~3    renderer 실행 (≈3ms)
+   t=3~6.2  indexer 실행, renderer 대기 (≈3.2ms)  ← 이 사이에 t=4가 지나감
+   t=6.2    renderer가 CPU를 다시 받음 → now_ns() ≥ end → loop 즉시 종료
+   t=6.4    잠듦 (마지막 계산 묶음 + 종료 처리 ≈0.2ms)
+   ```
+
+   frame당 exec 3.2ms = 앞의 3ms + 마지막 0.2ms. 남은 0.8ms는 채우지 않는다.
+3. **측정값으로 확인**
+
+   | | frame당 CPU 시간 | 600 frame 합계 |
+   | --- | ---: | ---: |
+   | CPU 4ms를 채우는 구조였다면 | 4.0 ms | 2400 ms |
+   | **실측 `cpu_ms`** | **3.2 ms** | **1936 ms** |
+
+   frame마다 약 0.8ms씩 덜 실행 → 벽시계 기준으로 끊긴다는 증거. (단독 실행은 선점이 없어 2422ms ≈ frame당 4ms.)
+4. **질문한 구조는 실제 플레이어의 경우**: "CPU 4ms만큼의 일을 다 해야 끝나는" decode/render라면 `0~3 실행 → 3~6 대기 → 6~7 남은 1ms 실행 → 끝` (frame 작업 7ms 이상). → 고정 작업량 버전 renderer를 추가해 비교하면 확인 가능.
 
 ## 현업 적용 포인트 (webOS 미디어 플레이어)
 
