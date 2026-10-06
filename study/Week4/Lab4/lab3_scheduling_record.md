@@ -93,11 +93,22 @@
   - 운영 장비에서 바로 확인: `cat /proc/<pid>/task/<tid>/schedstat` (실행 ns, 대기 ns, 횟수), `grep ctxt /proc/<pid>/task/<tid>/status`
 - **CPU 절전도 지연 원인이 된다.** 주기적으로 깨어나는 player thread가 idle CPU에서 돌면 C-state 탈출과 저주파수 때문에 수백 µs 늦어질 수 있다. 측정할 때 governor, 주파수, C-state 설정을 함께 기록한다.
 
-## 다음 단계 (TODO)
+## 진행 현황 (안내서 단계 1~7)
 
-- [ ] perf sched로 기본 조건 기록 → Max delay와 경쟁 task 식별 (sudo 필요)
-- [ ] 조치 A: indexer nice 10
-- [ ] 조치 B: cgroup cpu.weight 20 (sudo)
-- [ ] 조치 C: cgroup cpu.max 30% (sudo)
-- [ ] 조치 D: cgroup cpuset 1 (sudo)
-- [ ] `sudo bash tools/fixcg.sh teardown`으로 정리
+| 단계 | 내용 | tag | sudo | 상태 |
+| --- | --- | --- | --- | --- |
+| 1 | indexer + renderer 같은 CPU 0에서 실행 | base | - | 완료 (위 결과) |
+| 2 | 1을 반복하며 perf sched 8초 기록 → Max delay, 경쟁 task 식별 | base | perf | |
+| 3 | 조치 A: indexer TID에 nice 10 | nice | perf | |
+| 4 | 조치 B: lab/bg cpu.weight 20 | weight | O | |
+| 5 | 조치 C: lab/bg cpu.max 30ms/100ms | max | O | |
+| 6 | 조치 D: lab/bg cpuset.cpus=1 | cpuset | O | |
+| 7 | 정리: fixcg.sh teardown, 결과 표 작성 | - | O | |
+
+**실행 방법**: 단계 2~7은 indexer, renderer, perf를 동시에 띄워야 해서 `tools/lab3_run.sh`(study 추가)로 묶었다. 안내서 명령을 그대로 background 실행하고, 결과를 `logs/lab3-<tag>-*.txt`에 저장한다.
+
+```bash
+cd study/Week4/Lab4
+bash tools/lab3_run.sh all     # 2~7 전체 (약 2분, sudo 비밀번호 1회)
+bash tools/lab3_run.sh 4       # 특정 단계만
+```
