@@ -355,6 +355,43 @@ indexer  = 38% × 50% + 62%   = 81.2%   (실측 80.4%)
    frame마다 약 0.8ms씩 덜 실행 → 벽시계 기준으로 끊긴다는 증거. (단독 실행은 선점이 없어 2422ms ≈ frame당 4ms.)
 4. **질문한 구조는 실제 플레이어의 경우**: "CPU 4ms만큼의 일을 다 해야 끝나는" decode/render라면 `0~3 실행 → 3~6 대기 → 6~7 남은 1ms 실행 → 끝` (frame 작업 7ms 이상). → 고정 작업량 버전 renderer를 추가해 비교하면 확인 가능.
 
+**Q. cgroup의 그룹은 미리 정의돼 weight도 정해져 있나? 런타임에 특정 thread를 특정 그룹에 할당하나?**
+
+둘 다 런타임이다. **그룹 생성, weight 설정, thread 배치 모두 실행 중에 파일을 쓰는 것으로 처리되고, 언제든 바꿀 수 있다.** 미리 정의된 것처럼 보이는 그룹은 부팅 시 systemd 같은 관리자가 만든 것이다.
+
+1. **cgroup = 파일시스템**: `/sys/fs/cgroup` 아래 디렉터리 하나가 그룹 하나, 그 안의 파일이 설정값.
+
+   | 하는 일 | 방법 | 이번 실습 (`tools/fixcg.sh`) |
+   | --- | --- | --- |
+   | 그룹 만들기 | `mkdir` | `mkdir -p /sys/fs/cgroup/lab/fg /sys/fs/cgroup/lab/bg` |
+   | controller 켜기 | 부모의 `cgroup.subtree_control`에 쓰기 | `echo "+cpu +cpuset" > lab/cgroup.subtree_control` |
+   | weight | `cpu.weight` | `echo 20 > lab/bg/cpu.weight` |
+   | 상한 | `cpu.max` | `echo "30000 100000" > lab/bg/cpu.max` |
+   | 쓸 CPU 제한 | `cpuset.cpus` | `echo 1 > lab/bg/cpuset.cpus` |
+   | 삭제 | `rmdir` (process가 없어야 함) | `teardown` |
+
+   설정값은 task가 도는 중에도 바꿀 수 있고 바로 적용된다 (단계 5의 `setup 100` → `max`).
+
+2. **thread를 그룹에 넣기**
+
+   | 단위 | 방법 | 이번 실습 (`src/mtwork.c`) |
+   | --- | --- | --- |
+   | process 전체 | `cgroup.procs`에 **PID** → 모든 thread 이동 | `-c lab/bg`: 시작할 때 자기 PID를 씀 (L334) |
+   | thread 하나 | `cgroup.threads`에 **TID** | `cg=NAME`: thread가 자기 TID를 씀 (L235) |
+
+   - fork하면 자식은 부모의 cgroup을 물려받는다 → 서비스 process 하나만 넣으면 그 thread와 자식도 같은 그룹.
+   - cgroup v2는 기본이 **process 단위**다. thread별로 다른 그룹에 넣으려면 하위 트리를 `cgroup.type = threaded`로 바꿔야 하고, 이 모드에서는 cpu, cpuset 등 일부 controller만 쓸 수 있다. v1은 controller별 `tasks` 파일에 TID를 써서 thread 단위가 자유로웠다.
+
+3. **실제 시스템에서 누가 정하나**
+   - 이 PC: `cat /proc/self/cgroup` → `0::/user.slice/user-1000.slice/user@1000.service/app.slice/ptyxis-spawn-....scope`
+   - **systemd**: 부팅 시 `system.slice`, `user.slice` 등을 만들고 서비스마다 그룹을 만든다. weight는 unit 파일의 `CPUWeight=`, `CPUQuota=`, `AllowedCPUs=` (이 PC는 미설정 → 기본 100). 런타임 변경: `systemctl set-property <unit> CPUWeight=20`.
+   - **플랫폼 관리자**: 앱 상태에 따라 런타임에 옮긴다. 예: Android는 foreground/background 전환 시 thread를 다른 cgroup(cpuset 등)으로 이동.
+
+4. **webOS 플레이어 적용**
+   - 먼저 player가 어느 그룹에 있고 어떤 제한이 걸려 있는지 확인: `cat /proc/<player_pid>/cgroup` → 그 경로의 `cpu.weight`, `cpu.max`.
+   - 이슈 원인이 player 코드가 아니라 그룹 설정일 수도 있다 (예: background로 분류돼 `cpu.max`에 걸림).
+   - webOS의 cgroup 구성 방식(systemd unit인지, 별도 관리자인지)은 버전·플랫폼마다 다르므로 실제 보드에서 확인할 것. (→ 보드 특성 체크리스트 3번 "player의 cgroup과 제한")
+
 ## 현업 적용 포인트 (webOS 미디어 플레이어)
 
 - **CPU 사용률이 아니라 schedstat의 `wait_ms`(runqueue 대기)와 비자발적 context switch를 본다.** renderer는 CPU의 20%만 쓰는데도 frame마다 3ms씩 대기했다. `top`으로는 보이지 않는다.
