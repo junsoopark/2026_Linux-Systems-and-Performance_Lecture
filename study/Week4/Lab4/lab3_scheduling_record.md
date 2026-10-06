@@ -87,6 +87,37 @@
 
 ## 질문 & 추가 테스트
 
+**Q. "16.667ms(60fps)마다 깨어나 4ms 일하고 다시 잠듦"을 어떻게 시뮬레이션했나?**
+
+`periodic:16667:4000` = 주기 16,667µs, 작업 4,000µs. `src/mtwork.c` `thread_main` L259~L281 (단순화):
+
+```c
+t0 = now_ns();                            // 시작 시각
+for (i = 0; now_ns() < end; i++) {
+    expected = t0 + i * period;           // i번째 frame이 시작돼야 할 시각 (절대 시각)
+    start    = now_ns();
+    late[n++] = start - expected;         // ① 얼마나 늦게 시작했나 → late_p99u
+
+    work_item(4ms);                       // ② 4ms 동안 CPU 계산 (busy loop)
+
+    if (now_ns() > expected + period)     // ③ 다음 frame 시작 시각을 넘겼으면
+        misses++;                         //    → miss
+
+    next += period;                       // ④ 다음 frame 시작 시각까지
+    clock_nanosleep(..., TIMER_ABSTIME, &next);  //    잠듦 (CPU 반납)
+}
+```
+
+1. **잠들고 깨어나기 (④)**: `clock_nanosleep`에 **절대 시각**(`TIMER_ABSTIME`)을 준다. 상대 시간("16.667ms 자기")을 쓰면 작업 시간과 wakeup 지연이 매 frame 누적돼 주기가 밀린다. 절대 시각이면 frame i의 기준이 항상 `t0 + i × 16.667ms`로 고정된다. vsync 기반 렌더 루프와 같은 방식이다.
+2. **일하기 (②)**: `work_item`은 곱셈·덧셈 계산 loop를 **벽시계 기준 4ms가 될 때까지** 돌린다. 그 사이 실제 반복 횟수가 `rounds`다. 선점당해도 4ms가 지나면 끝나고, 대신 `rounds`(처리량)와 `cpu_ms`가 줄어든다. → 기본 조건에서 miss가 0이었던 이유.
+3. **지연 측정 (①)**: 깨어나 실제로 실행된 시각 − 원래 시작해야 할 시각을 frame마다 기록하고, 정렬해서 99번째 백분위를 `late_p99u`로 출력한다. timer가 울린 뒤 scheduler가 CPU를 주기까지의 대기와 C-state 탈출 시간이 포함된다.
+4. **miss 판정 (③)**: 작업이 끝난 시각이 다음 frame 시작 시각을 넘으면 miss. 이때 다음 `clock_nanosleep`은 이미 지난 시각이라 바로 반환된다 → 늦은 frame을 바로 따라잡는 구조.
+
+**실제 플레이어와 다른 점**
+- 실제 render thread는 timer 대신 vsync, 디코더 출력 같은 이벤트를 기다리는 경우가 많다.
+- 실제 작업은 "frame 1장 처리"처럼 **양이 정해진 일**이다. CPU를 빼앗기면 처리 시간 자체가 늘어나 miss로 바로 이어진다.
+- 추가 테스트 후보: `work_item`을 "N rounds 할 때까지"로 바꾼 고정 작업량 버전으로 조치별 miss 차이 비교.
+
 ## 현업 적용 포인트 (webOS 미디어 플레이어)
 
 - **CPU 사용률이 아니라 schedstat의 `wait_ms`(runqueue 대기)와 비자발적 context switch를 본다.** renderer는 CPU의 20%만 쓰는데도 frame마다 3ms씩 대기했다. `top`으로는 보이지 않는다.
