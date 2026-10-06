@@ -361,6 +361,47 @@ indexer  = 38% × 50% + 62%   = 81.2%   (실측 80.4%)
   - 운영 장비에서 바로 확인: `cat /proc/<pid>/task/<tid>/schedstat` (실행 ns, 대기 ns, 횟수), `grep ctxt /proc/<pid>/task/<tid>/status`
 - **CPU 절전도 지연 원인이 된다.** 주기적으로 깨어나는 player thread가 idle CPU에서 돌면 C-state 탈출과 저주파수 때문에 수백 µs 늦어질 수 있다. 측정할 때 governor, 주파수, C-state 설정을 함께 기록한다.
 
+### 실제 디바이스에서 먼저 파악할 보드 특성 체크리스트
+
+> nice별 weight 표(`sched_prio_to_weight`)는 kernel 2.6.23(CFS 도입)부터 동일하다. 보드·kernel마다 달라지는 것은 scheduler 알고리즘, slice 관련 값, tick, CPU 구성이다.
+
+**1. kernel과 scheduler**
+
+| 항목 | 확인 방법 | 왜 중요한가 |
+| --- | --- | --- |
+| kernel 버전 | `uname -r` | 6.6 미만 CFS, 이상 EEVDF. 깨어날 때 우선권, slice 개념이 다름 |
+| HZ | `CONFIG_HZ` (`/boot/config-*`, `/proc/config.gz`) | tick 간격 = 선점 확인의 최소 단위 (100/250/1000) |
+| preempt 방식 | `CONFIG_PREEMPT*`, `uname -v` | kernel 코드 실행 중 선점 가능 여부 |
+| slice 관련 값 | CFS: `sched_latency_ns`, `sched_min_granularity_ns`, `sched_wakeup_granularity_ns` / EEVDF: `base_slice_ns` | 경쟁 시 frame 지연 크기 결정 (실습의 6.4ms) |
+
+- 5.13부터 slice 관련 값 위치가 `/proc/sys/kernel/sched_*` → `/sys/kernel/debug/sched/`로 바뀌었다.
+- CFS는 깨어난 task에 **sleeper credit**을 주고, `wakeup_granularity`보다 vruntime 차이가 클 때만 즉시 선점한다 → 같은 player 코드라도 kernel 버전에 따라 지연 양상이 다르다.
+
+**2. CPU 구성과 전력 관리** (TV SoC는 대부분 ARM)
+
+| 항목 | 확인 방법 | 왜 중요한가 |
+| --- | --- | --- |
+| core 구성 | `lscpu`, `/proc/cpuinfo`, `/sys/devices/system/cpu/cpu*/cpu_capacity` | big.LITTLE이면 core에 따라 같은 작업도 2~3배 차이 |
+| cache | `/sys/devices/system/cpu/cpu0/cache/index*/size` | working set이 cache를 넘는 경계 (실습 1) |
+| cpufreq governor | `/sys/devices/system/cpu/cpu*/cpufreq/{scaling_governor,scaling_cur_freq}` | 단독 실행 때 깨어남이 더 늦었던 원인 |
+| cpuidle 상태 | `/sys/devices/system/cpu/cpu0/cpuidle/state*/{name,latency}` | 깊은 절전 상태일수록 깨어나는 데 오래 걸림 |
+| EAS / uclamp | `CONFIG_ENERGY_MODEL`, `CONFIG_UCLAMP_TASK`, cgroup `cpu.uclamp.min` | 전력 효율 우선이면 player thread가 LITTLE core에 배치될 수 있음 |
+
+**3. 자원 제어 설정**
+
+| 항목 | 확인 방법 | 왜 중요한가 |
+| --- | --- | --- |
+| cgroup 버전 | `mount \| grep cgroup` | v1 `cpu.shares`(기본 1024) vs v2 `cpu.weight`(기본 100). 조치 B~D 명령이 달라짐 |
+| player의 cgroup과 제한 | `cat /proc/<pid>/cgroup` → 해당 cgroup의 cpu.* | 시스템 서비스가 player를 어떤 group에 넣고 제한하는지 |
+| RT throttling | `/proc/sys/kernel/sched_rt_runtime_us` (기본 950000) | SCHED_FIFO도 1초 중 0.95초만 실행 (Q3.3) |
+| thread별 우선순위·affinity | `ps -eLo tid,cls,rtprio,ni,psr,comm`, `chrt -p`, `taskset -p` | 이미 RT priority, nice, CPU 고정이 걸린 thread 확인 |
+
+**적용 순서**
+1. 보드 기본 정보 수집 → 이슈가 생겼을 때 "이 보드의 기준"
+2. 이슈 재현 중 `/proc/<pid>/task/*/schedstat`으로 runqueue 대기가 큰 thread 찾기 (perf 없이도 가능)
+3. perf가 있으면 perf sched로 경쟁 task 식별 (단계 2 절차)
+4. nice → cgroup weight → cpuset → RT 순서로 조치 비교 (단계 3~6)
+
 ## 진행 현황 (안내서 단계 1~7)
 
 | 단계 | 내용 | tag | sudo | 상태 |
