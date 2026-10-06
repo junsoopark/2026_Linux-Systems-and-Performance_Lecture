@@ -34,6 +34,42 @@ study/WeekN/
     └── assignment_record.md    과제 설계·구현 메모·결과
 ```
 
+## 원본 대비 추가·제외된 파일
+
+`study/`는 원본 복사본이지만, 아래 파일만 원본과 다릅니다. 이 외의 파일은 원본과 동일한 내용으로 출발합니다.
+
+### study/ 공통 (원본에 없음)
+
+| 파일 | 설명 |
+| --- | --- |
+| `README.md` | 이 문서. 브랜치 규칙, 구조, 진행 현황 |
+| `new-week.sh` | 원본 `WeekN`을 같은 구조로 `study/WeekN`에 복사하고 기록 템플릿 생성 |
+| `_template/notes.md` | `WeekN/notes.md` 템플릿 |
+| `_template/lab.md` | `WeekN/LabN/lab_record.md` 템플릿 (커널·CPU·날짜 자동 기입) |
+| `_template/assignment.md` | `WeekN/AssignmentN/assignment_record.md` 템플릿 |
+| `.gitignore` | `bin/`, `perf.data*` 무시, `LabN/logs/`는 커밋하도록 루트 규칙 해제 |
+
+### 주차별 추가 파일
+
+| 파일 | 종류 | 설명 |
+| --- | --- | --- |
+| `WeekN/notes.md` | 직접 작성 | 주차 개념 정리 |
+| `WeekN/LabN/lab_record.md` | 직접 작성 | 실습 명령, 관측값, 해석, 기록지 답변 |
+| `WeekN/LabN/logs/` | 실습 결과 | 원본 도구가 생성하는 관측 로그 (원본에서는 git 무시, 여기서는 커밋) |
+| `WeekN/AssignmentN/assignment_record.md` | 직접 작성 | 과제 요구사항, 설계, 구현 메모, 결과 |
+| `WeekN/LabN/LabN_*.md` | 원본 변환 | 같은 위치의 원본 `LabN_*.docx`를 pandoc으로 md 변환 (명령어 형광펜 → 코드 블록, 내용은 원문 그대로) |
+
+현재 변환된 문서: `Week4/Lab4/Lab4_instructions.md`, `Week4/Lab4/Lab4_answers.md`
+
+### 원본에서 제외·대체된 파일
+
+| 원본 | study/ | 이유 |
+| --- | --- | --- |
+| `*.docx` | 같은 이름의 `.md` (변환한 주차만) | 바이너리 대신 읽기·diff 가능한 형식 |
+| `*.pdf` (과제 문서) | 없음 → 원본 경로 참조 | 문서 중복 방지 |
+| `Week1/Lab1/bin/` | 없음 → `make`로 생성 | 빌드 산출물 |
+| `Week3/Lab3/service_log_dataset/` | symlink → 원본 | 51MB 읽기 전용 데이터, 복사 불필요 |
+
 ## 진행 현황
 
 | 주차 | 주제 | 정리 | Lab | 과제 |
