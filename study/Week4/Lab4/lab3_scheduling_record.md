@@ -472,6 +472,54 @@ indexer  = 38% × 50% + 62%   = 81.2%   (실측 80.4%)
    - **IPC 경계에서 우선순위가 이어지는지** 확인: 플레이어 thread가 높아도 IPC 요청을 처리하는 서비스 thread가 nice 0이면 그 지점에서 지연이 생긴다.
    - perf sched timehist로 플레이어가 응답을 기다리는 동안 처리 쪽 thread가 runqueue에서 대기했는지 확인 가능.
 
+**Q. Android 기준으로 tunneled 재생에 대해 벤더에 어떤 가이드가 전달되고, 실제로 어떻게 최종 적용되나?**
+
+> 조사 출처: AOSP 문서, CTS 소스, Netflix 파트너 문서(이 계정으로 열람 가능한 Linux NRDP 영역만. Android TV 영역은 열람 불가). 2026-10-07 확인.
+
+**결론: 벤더가 받는 가이드는 "구현할 인터페이스"와 "내야 할 결과"다. thread 우선순위 같은 스케줄링 방법은 공개 문서에 없고 벤더 구현 영역으로 남아 있다.**
+
+1. **Google → 벤더: 인터페이스 규격** ([AOSP Multimedia tunneling](https://source.android.com/docs/devices/tv/multimedia-tunneling))
+   - 정의: 압축 영상이 앱 코드나 framework를 거치지 않고 HW 디코더를 지나 디스플레이로 바로 간다. frame 출력 타이밍은 Android 아래 벤더 코드가 관리한다.
+
+   | 영역 | 구현 내용 |
+   | --- | --- |
+   | 디코더 선언 | `media_codecs.xml`에 `<Feature name="tunneled-playback" .../>` |
+   | tunnel 모드 설정 | Codec2 `C2PortTunneledModeTuning` / OMX `configureVideoTunnelMode` |
+   | 디스플레이 연결 | 디코더가 **sideband handle** 생성·반환(`C2PortTunnelHandleTuning`). HWC가 이 handle로 디코더 출력을 받아 **오디오 출력이나 tuner 시계에 맞춰** 화면에 올림 |
+   | A/V sync | `HW_AV_SYNC` ID 지원, 오디오 sync header의 timestamp 해석 |
+   | 첫 frame 제어 | peek(재생 전 첫 frame 표시 여부), `TUNNEL_HOLD_RENDER` / `TUNNEL_START_RENDER` |
+   | buffer | tunneled 디코더 출력 buffer 수 0 (출력이 앱으로 오지 않음) |
+
+   - **thread 우선순위·CPU 스케줄링 언급 없음.**
+
+2. **Google의 확인: CTS** ([DecoderTest.java](https://android.googlesource.com/platform/cts/+/99d04a0f920/tests/tests/media/decoder/src/android/media/decoder/cts/DecoderTest.java))
+   - `testTunneledVideoPeekOff*`, `testTunneledAccurateVideoFlush*` 등 tunneled 전용 테스트.
+   - 타이밍 결과를 검사: 일시정지 시 오디오는 250ms 안에 멈춰야 하고, 비디오는 파이프라인이 깊어 오디오 정지 후 500ms까지 진행 허용.
+
+3. **앱 파트너의 확인: Netflix 인증** (Linux NRDP 문서)
+   - [Playback Platform Metrics](https://docs.netflixpartners.com/nrdp/documentation/capabilities/playback-platform-metrics): NRDP 2025.1부터 **REQUIRED**. frame drop, freeze, 오디오 끊김, 디코드 오류를 MultiPlayer DPI로 보고. 자동 인증 테스트 있음.
+   - [CPU Requirements](https://docs.netflixpartners.com/nrdp/documentation/device-requirements/cpu): quad-core 12,500 DMIPS 이상 (6.1.2+ 13,500 권장).
+   - [ThreadConfiguration DPI](https://docs.netflixpartners.com/nrdp/documentation/dpis/system/threadconfiguration): NRDP 6.1.2 추가(`InterfaceEGLDriver.h`). 문서 본문은 비어 있음 → SDK 헤더나 Partner Engineer로 확인 필요.
+   - webOS의 Netflix는 Linux NRDP 계열이라 Android 문서보다 이쪽이 실무와 더 직접적일 가능성이 크다.
+
+4. **최종 적용 흐름** (문서 기반 정리 + 추론)
+
+   ```
+   ① Google: 인터페이스 규격(AOSP 문서) + 결과 검사(CTS)
+   ② SoC 벤더: BSP 구현 (tunneled 디코더, HWC sideband, 오디오 HAL HW A/V sync)
+      - 내부 thread 구성·우선순위(SCHED_FIFO 여부 등)는 벤더 결정   ← 문서에 없음 (추론)
+   ③ OEM: 통합·tuning, CTS 통과
+   ④ 앱 파트너(Netflix 등): 자체 인증으로 결과 검증 (frame drop, A/V sync, 재생 시작 시간)
+      → 기준 미달이면 OEM·SoC 벤더가 BSP 수정
+   ```
+
+   - ①④는 결과만 규정하고, 달성 방법(thread 우선순위, HW 큐 깊이, 인터럽트 처리)은 ②의 구현 영역 → 공개 문서에는 나오지 않는다 (추론).
+
+5. **webOS 플레이어 관점**
+   - tunneled 구조에서 frame 타이밍의 대부분은 BSP와 HW가 좌우한다. 플랫폼 플레이어가 볼 thread는 주로 앞단: demux, DRM 복호화, 디코더 입력(feeding), 오디오 출력.
+   - 이번 실습의 renderer/indexer 구도가 앞단 thread에서 그대로 재현된다: feeding thread가 백그라운드 작업에 밀리면 디코더 입력이 바닥나고(underflow) frame drop으로 이어진다.
+   - Netflix 인증에서 Playback Platform Metrics로 frame drop이 보고되면 → schedstat 대기 시간 → perf sched → 조치 비교 순으로 원인을 좁힌다.
+
 ## 현업 적용 포인트 (webOS 미디어 플레이어)
 
 - **CPU 사용률이 아니라 schedstat의 `wait_ms`(runqueue 대기)와 비자발적 context switch를 본다.** renderer는 CPU의 20%만 쓰는데도 frame마다 3ms씩 대기했다. `top`으로는 보이지 않는다.
