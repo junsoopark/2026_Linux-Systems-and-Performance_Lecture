@@ -436,6 +436,42 @@ indexer  = 38% × 50% + 62%   = 81.2%   (실측 80.4%)
    3. 동적 조정: 재생 시작 시 CPU 주파수나 core 배치를 올려 주는 장치(Power HAL류)가 있나?
    - 첫 확인: 재생 중 `ps -eLo tid,cls,rtprio,ni,psr,comm` (정책 TS/FF/RR, RT 우선순위, nice, 실행 CPU)
 
+**Q. Android에서 framework로부터 buffer를 받는 SoC 벤더 렌더러 thread의 우선순위는 누가 정하나? 벤더가 스스로 정하나?**
+
+> Android 구조에 대한 일반 지식 기반 설명. 버전마다 세부가 다를 수 있음.
+
+기본적으로 **벤더가 스스로 정한다.** 단, 플랫폼이 정한 권한 범위 안에서만 가능하고, IPC를 통해 플랫폼 thread의 우선순위가 넘어오는 경로도 있다.
+
+1. **영상 frame 경로와 담당**
+
+   ```
+   앱 (MediaCodec 호출)
+    → Codec2 HAL            [벤더] 디코더, HW 디코더 제어 thread
+    → BufferQueue (Surface)  [플랫폼] buffer 전달 통로
+    → SurfaceFlinger         [플랫폼] 화면 합성, main thread SCHED_FIFO
+    → Composer HAL (HWC)     [벤더] 디스플레이 HW에 레이어를 올리는 "렌더러"
+    → display driver         [벤더] kernel DRM/KMS
+   ```
+
+2. **우선순위가 정해지는 세 경로**
+   - **① 벤더 코드가 직접 설정**: Composer HAL은 시작 시 자기 thread를 `SCHED_FIFO`로 올린다. AOSP 참고 구현에도 이 코드가 있고, 벤더는 보통 이를 기반으로 만든다. 내부 vsync thread 등도 벤더 코드가 정한다.
+   - **② 플랫폼이 허용 범위를 제한**: init rc의 `rlimit rtprio`(RT 우선순위 상한), `capabilities SYS_NICE`(스스로 올릴 권한), SELinux의 `sys_nice` 권한, task profile(cgroup).
+   - **③ binder 우선순위 상속**: SurfaceFlinger가 Composer HAL을 binder로 호출하면, 요청을 처리하는 HAL thread가 호출자의 우선순위를 물려받는다. RT 우선순위 상속도 지원한다(서비스가 해당 객체에 RT 상속을 설정). → victim의 우선순위가 IPC를 따라 다음 단계로 전달되어, 파이프라인 중간에서 우선순위가 끊기지 않게 한다.
+
+3. **TV에서 중요한 경우: tunneled playback**
+   - Android TV는 영상 재생에 tunneled mode를 자주 쓴다 (Netflix 등도 TV에서 사용하는 것으로 알려짐).
+   - 디코더 출력이 SurfaceFlinger를 거치지 않고 SoC 비디오 HW 경로로 바로 디스플레이에 간다. A/V sync와 frame 출력 타이밍도 벤더 비디오 파이프라인(HW + BSP)이 처리한다.
+
+   | 재생 방식 | frame 타이밍을 좌우하는 것 | 우선순위 결정 |
+   | --- | --- | --- |
+   | 일반 재생 (SF 합성) | SurfaceFlinger + Composer HAL | 플랫폼(SF) + 벤더(HAL), binder 상속으로 연결 |
+   | tunneled 재생 | SoC 비디오 파이프라인 | 거의 전적으로 벤더 |
+
+4. **webOS 플레이어 적용**
+   - TV SoC는 대부분 디코더 → 비디오 plane HW 경로가 있어 frame 타이밍의 상당 부분이 BSP에 있을 가능성이 크다 → webOS 파이프라인 구조 확인.
+   - **IPC 경계에서 우선순위가 이어지는지** 확인: 플레이어 thread가 높아도 IPC 요청을 처리하는 서비스 thread가 nice 0이면 그 지점에서 지연이 생긴다.
+   - perf sched timehist로 플레이어가 응답을 기다리는 동안 처리 쪽 thread가 runqueue에서 대기했는지 확인 가능.
+
 ## 현업 적용 포인트 (webOS 미디어 플레이어)
 
 - **CPU 사용률이 아니라 schedstat의 `wait_ms`(runqueue 대기)와 비자발적 context switch를 본다.** renderer는 CPU의 20%만 쓰는데도 frame마다 3ms씩 대기했다. `top`으로는 보이지 않는다.
