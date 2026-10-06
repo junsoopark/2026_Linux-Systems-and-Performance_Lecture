@@ -113,6 +113,11 @@ for (i = 0; now_ns() < end; i++) {
 3. **지연 측정 (①)**: 깨어나 실제로 실행된 시각 − 원래 시작해야 할 시각을 frame마다 기록하고, 정렬해서 99번째 백분위를 `late_p99u`로 출력한다. timer가 울린 뒤 scheduler가 CPU를 주기까지의 대기와 C-state 탈출 시간이 포함된다.
 4. **miss 판정 (③)**: 작업이 끝난 시각이 다음 frame 시작 시각을 넘으면 miss. 이때 다음 `clock_nanosleep`은 이미 지난 시각이라 바로 반환된다 → 늦은 frame을 바로 따라잡는 구조.
 
+**실제 플레이어와 다른 점**
+- 실제 render thread는 timer 대신 vsync, 디코더 출력 같은 이벤트를 기다리는 경우가 많다.
+- 실제 작업은 "frame 1장 처리"처럼 **양이 정해진 일**이다. CPU를 빼앗기면 처리 시간 자체가 늘어나 miss로 바로 이어진다.
+- 추가 테스트 후보: `work_item`을 "N rounds 할 때까지"로 바꾼 고정 작업량 버전으로 조치별 miss 차이 비교.
+
 **Q. `next`의 초기값은?**
 
 측정 시작 시각 `t0`를 `timespec`(초 + ns)으로 바꾼 값 (L253, L263).
@@ -163,11 +168,6 @@ struct timespec next = { .tv_sec  = t0 / 1000000000,     // L263
 
    - 강의 문장 "indexer의 slice가 끝날 때까지 수 ms 기다릴 수 있다" = ①에서 선점하지 못하고 4ms tick에서 slice 소진이 확인될 때까지 기다리는 경우.
    - 이 PC에서 `late_p99u`가 71µs인 것은 1ms tick과 EEVDF의 즉시 선점 때문으로 해석된다. 대신 일하는 도중에 slice 단위로 indexer와 번갈아 실행돼 지연이 `wait_ms`(frame당 3.2ms)로 나타났다. → 단계 2 perf sched timehist로 실제 선점 시점을 확인할 것.
-
-**실제 플레이어와 다른 점**
-- 실제 render thread는 timer 대신 vsync, 디코더 출력 같은 이벤트를 기다리는 경우가 많다.
-- 실제 작업은 "frame 1장 처리"처럼 **양이 정해진 일**이다. CPU를 빼앗기면 처리 시간 자체가 늘어나 miss로 바로 이어진다.
-- 추가 테스트 후보: `work_item`을 "N rounds 할 때까지"로 바꾼 고정 작업량 버전으로 조치별 miss 차이 비교.
 
 ## 현업 적용 포인트 (webOS 미디어 플레이어)
 
