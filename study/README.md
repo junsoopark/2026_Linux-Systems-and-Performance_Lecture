@@ -59,6 +59,10 @@ study/WeekN/
 | `WeekN/AssignmentN/assignment_record.md` | 직접 작성 | 과제 요구사항, 설계, 구현 메모, 결과 |
 | `WeekN/LabN/LabN_*.md` | 원본 변환 | 같은 위치의 원본 `LabN_*.docx`를 pandoc으로 md 변환 (명령어 형광펜 → 코드 블록, 내용은 원문 그대로) |
 
+| `WeekN/LabN/src/*.c` (원본에 없는 파일) | 추가 테스트 | 질문 검증용으로 직접 만든 코드. 파일 상단에 `[study 추가]` 표기 |
+
+현재 추가된 테스트 코드: `Week4/Lab4/src/ws_seq.c` (실습 1 Q1.2 순차 접근 비교)
+
 현재 변환된 문서: `Week4/Lab4/Lab4_instructions.md`, `Week4/Lab4/Lab4_answers.md`
 
 ### 원본에서 제외·대체된 파일

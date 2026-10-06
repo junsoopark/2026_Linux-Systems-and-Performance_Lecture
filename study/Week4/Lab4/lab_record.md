@@ -54,15 +54,108 @@
 
 ## 실습 1. Cache와 working set의 크기
 
+**목표**: working set을 16KB → 64MB로 키우며 random pointer chase의 접근당 시간(ns)을 재고, 시간이 급증하는 지점에서 cache 계층 경계를 찾는다.
+
+**원리** (`src/ws_demo.c`)
+- L40: buffer를 64B(cache line) 칸으로 나누고, 각 칸에 "다음에 읽을 칸 번호"를 무작위 순환 순서로 기록 (Sattolo 알고리즘 → 모든 칸을 한 번씩 도는 하나의 cycle)
+- L45: `p = buf[p]` — 다음 주소가 직전 load 결과로 정해지는 **dependent load**. prefetcher가 다음 주소를 예측할 수 없고, out-of-order 실행으로 여러 load를 겹칠 수도 없다 → 측정값 = 순수 memory **latency**
+
 ### 사전 예측
+
+lscpu 기준 경계는 L1d 48KB / L2 1.25MB / L3 12MB (코어당 크기, 위 Q&A 참고).
+
+| 구간 | 예상 위치 | 예상 ns/access |
+| --- | --- | --- |
+| ≤ 32KB | L1d | ~1 (약 4~5 cycle) |
+| 64KB ~ 1MB | L2 | ~3 (약 14 cycle) |
+| 2MB ~ 8MB | L3 | ~10~15 |
+| ≥ 16MB | DRAM | 60~100 |
+
+bare metal이라 L3를 VM과 나눠 쓰지 않으므로 WSL2보다 경계가 뚜렷할 것으로 예상.
 
 ### 실행 및 관측
 
+**1) 크기별 sweep** — `./bin/ws_demo 16 65536 20000000 | tee logs/ws-sweep.txt`
+
+| size_kb | ns/access | 위치 |
+| ---: | ---: | --- |
+| 16 | 1.48 | L1d |
+| 32 | 1.29 | L1d |
+| **64** | **3.22** | L2 ← 경계 1 |
+| 128 | 3.29 | L2 |
+| 256 | 3.26 | L2 |
+| 512 | 3.99 | L2 (TLB 영향 시작) |
+| 1024 | 4.88 | L2 (거의 가득) |
+| **2048** | **10.65** | L3 ← 경계 2 |
+| 4096 | 12.00 | L3 |
+| 8192 | 17.09 | L3 (거의 가득) |
+| **16384** | **60.40** | DRAM ← 경계 3 |
+| 32768 | 85.31 | DRAM |
+| 65536 | 92.69 | DRAM |
+
+**2) 반복 측정** — `logs/ws-repeat.txt`
+
+| | 1회 | 2회 | 3회 |
+| --- | ---: | ---: | ---: |
+| 32KB | 1.37 | 1.33 | 1.32 |
+| 8MB | 19.09 | 16.35 | 17.37 |
+
+→ 8MB가 32KB보다 일관되게 약 13배 느림. 측정 안정적.
+
+**관측 기록지 — 1 Cache 계층**
+
+| 변화 지점 | 크기 (KB) | ns/access (이전) | ns/access (이후) | 대응하는 cache | 일치 여부 |
+| --- | --- | ---: | ---: | --- | --- |
+| 1 | 32 → 64 | 1.29 | 3.22 (×2.5) | L1d (48KB) | 일치 |
+| 2 | 1024 → 2048 | 4.88 | 10.65 (×2.2) | L2 (1.25MB) | 일치 |
+| 3 | 8192 → 16384 | 17.09 | 60.40 (×3.5) | L3 (12MB) | 일치 |
+
 ### 확인 질문 (Q1.1 ~ Q1.3)
+
+**Q1.1** 급증 지점과 lscpu 크기 비교, 불일치 요인은?
+- 세 경계 모두 lscpu 크기(48KB / 1.25MB / 12MB)가 들어 있는 2배 구간에서 정확히 나타났다. 2배 단위로 재므로 정확한 경계는 그 사이 어딘가.
+- 경계 **직전에도 시간이 서서히 오른다** (512KB 3.99 → 1MB 4.88, 4MB 12.0 → 8MB 17.1). 원인 후보:
+  - **TLB miss**: L1 dTLB는 4KB page 기준 64 entry ≈ 256KB만 커버한다. 그 이상은 STLB 조회나 page walk 비용이 더해진다.
+  - cache가 꽉 차기 전부터 set 충돌(associativity 한계)이나 다른 process가 같은 L3를 써서 일부 line이 밀려난다.
+- 강의 환경(WSL2)에서 의심하던 hypervisor나 다른 vCPU의 L3 공유는 여기 없다. 그래서 L3 경계가 lscpu 값과 잘 맞는다.
+
+**Q1.2** 순차 접근이면 경계가 보이는가? → **직접 테스트함** (아래 추가 테스트 1). DRAM 경계가 거의 사라진다. hardware prefetcher가 다음 line을 미리 가져와 latency를 가린다.
+
+**Q1.3** 왜 miss 횟수가 아니라 시간으로 재는가? PMU라면 어떤 event?
+- 강의 환경(WSL2)은 Hyper-V가 PMU를 노출하지 않아 hardware event를 쓸 수 없다. 그래서 miss가 만든 **시간 증가**로 간접 측정했다. 시간에는 interrupt나 다른 process의 간섭도 섞인다.
+- PMU event 예: `L1-dcache-load-misses`(L1 miss), `LLC-load-misses`(L3 miss → DRAM). 또는 `cycles`와 `instructions`로 IPC 급락을 확인.
+- 이 PC는 bare metal이라 PMU 사용 가능 → **추가 테스트 2로 직접 확인 예정** (perf 권한 설정 필요).
 
 ### 질문 & 추가 테스트
 
+**추가 테스트 1: 순차 접근 (Q1.2 검증)**
+- 원본은 유지하고 `src/ws_seq.c`를 추가했다. ws_demo와 같은 dependent load인데, 다음 칸만 항상 `i+1`이다.
+- 빌드: `cc -O2 -g -Wall -Wextra -std=gnu11 -fno-omit-frame-pointer -pthread -o bin/ws_seq src/ws_seq.c`
+- 실행: `./bin/ws_seq 16 65536 20000000 | tee logs/ws-seq-sweep.txt`
+
+| size_kb | random (ns) | sequential (ns) | 배율 |
+| ---: | ---: | ---: | ---: |
+| 32 | 1.29 | 1.35 | 1.0× |
+| 64 | 3.22 | 2.75 | 1.2× |
+| 1024 | 4.88 | 2.73 | 1.8× |
+| 2048 | 10.65 | 2.89 | 3.7× |
+| 8192 | 17.09 | 3.75 | 4.6× |
+| 16384 | 60.40 | 6.30 | 9.6× |
+| 65536 | 92.69 | 5.28 | **17.6×** |
+
+- 해석
+  - 순차 접근에서도 L1 경계(32→64KB, 1.35→2.75)는 남는다. prefetcher가 주로 L2로 데이터를 끌어오기 때문에 L1 hit만큼 빠르지는 않다.
+  - L2/L3/DRAM 경계는 거의 사라진다. DRAM(64MB)에서도 5ns로, 무작위 접근의 1/18이다.
+  - 이 코드도 dependent load라서 out-of-order로 load를 겹칠 수 없다. 따라서 **이 차이는 거의 전부 hardware prefetcher 효과**다 (답안은 OoO도 함께 언급하지만, 이 테스트에서는 prefetcher만으로 설명된다).
+
+**추가 테스트 2: PMU로 cache miss 직접 측정** — TODO (`sudo sysctl kernel.perf_event_paranoid=1` 후 진행)
+
 ### 현업 적용 포인트
+
+- **같은 연산량이라도 데이터 크기와 접근 패턴에 따라 최대 70배까지 느려진다** (L1 1.3ns vs DRAM 92ns). 성능 문제를 볼 때 연산량만 보지 말고 working set 크기와 접근 패턴을 함께 본다.
+- **hot data를 코어당 L2(1.25MB) 안에 맞추면 큰 이득**이다. 예: lookup table 크기 줄이기, 자주 쓰는 field만 따로 모으기(hot/cold 분리), AoS → SoA 변환.
+- **pointer chasing 자료구조(linked list, tree, hash chaining)는 prefetcher가 무력화된다.** 큰 데이터셋에서는 배열 기반 구조가 같은 O(n)이라도 10배 이상 빠를 수 있다 (추가 테스트 1).
+- 벤치마크할 때는 **입력 크기를 실제 운영 규모로** 맞춘다. 작은 테스트 데이터는 cache에 다 들어가서 운영 환경보다 훨씬 빠르게 나온다.
 
 ---
 
