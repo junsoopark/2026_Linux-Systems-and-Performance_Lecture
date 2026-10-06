@@ -149,7 +149,7 @@ struct timespec next = { .tv_sec  = t0 / 1000000000,     // L263
    - 기본 조건에서 경쟁 시 `rounds`가 단독보다 2.7배 많았던 것이 그 예다 (시간은 같아도 주파수 차이로 일한 양이 다름).
 2. **nice → weight 비율로 나눈다**: nice 0 = 1024, nice 10 ≈ 110 (한 단계에 약 1.25배).
    - runnable task끼리 weight 비율대로 시간을 나눈다. nice 0 둘 = 50:50, 조치 A(indexer nice 10) = 1024:110 ≈ 90:10.
-   - 자고 있는 task는 몫을 나누는 대상에서 빠진다. renderer가 주기의 75%를 자는 동안은 indexer가 CPU를 혼자 쓴다 → 전체 평균은 renderer 약 20%, indexer 약 86%.
+   - 자고 있는 task는 몫을 나누는 대상에서 빠진다. renderer가 주기의 75%를 자는 동안은 indexer가 CPU를 혼자 쓴다 → 둘이 같이 돈 10초 동안 renderer 약 19%, indexer 약 81% (아래 Q 참고).
    - **측정값으로 확인**: renderer가 frame 하나를 처리하는 동안 `exec_ms` 1936 / `wait_ms` 1938 → frame당 실행 3.2ms, 대기 3.2ms로 정확히 50:50. 4ms 작업이 6.4ms로 늘어난 이유는, 선점당한 사이에 끝나야 할 시각이 지나고 CPU를 다시 받은 뒤에야 끝난 것을 알아차리기 때문이다.
 3. **CFS → EEVDF**
    - vruntime(가상 실행 시간) = 실제 실행 시간 × 1024 / weight의 누적값. weight가 작으면 같은 시간을 써도 빨리 늘어난다.
@@ -168,6 +168,58 @@ struct timespec next = { .tv_sec  = t0 / 1000000000,     // L263
 
    - 강의 문장 "indexer의 slice가 끝날 때까지 수 ms 기다릴 수 있다" = ①에서 선점하지 못하고 4ms tick에서 slice 소진이 확인될 때까지 기다리는 경우.
    - 이 PC에서 `late_p99u`가 71µs인 것은 1ms tick과 EEVDF의 즉시 선점 때문으로 해석된다. 대신 일하는 도중에 slice 단위로 indexer와 번갈아 실행돼 지연이 `wait_ms`(frame당 3.2ms)로 나타났다. → 단계 2 perf sched timehist로 실제 선점 시점을 확인할 것.
+
+**Q. nice별 weight는 kernel scheduler에 정의된 값인가?**
+
+그렇다. `kernel/sched/core.c`의 `sched_prio_to_weight[40]`에 고정값으로 정의돼 있다.
+
+```c
+const int sched_prio_to_weight[40] = {
+ /* -20 */ 88761, 71755, 56483, 46273, 36291,
+ /* -15 */ 29154, 23254, 18705, 14949, 11916,
+ /* -10 */  9548,  7620,  6100,  4904,  3906,
+ /*  -5 */  3121,  2501,  1991,  1586,  1277,
+ /*   0 */  1024,   820,   655,   526,   423,
+ /*   5 */   335,   272,   215,   172,   137,
+ /*  10 */   110,    87,    70,    56,    45,
+ /*  15 */    36,    29,    23,    18,    15,
+};
+```
+
+- 이웃 값끼리 약 1.25배 → 경쟁하는 둘 중 한쪽 nice를 1 올리면 그쪽 CPU 몫이 약 10%p 줄어든다 (50:50 → 약 45:55).
+- `sched_prio_to_wmult[]` = 2³² / weight. 나눗셈 대신 곱셈으로 계산하려고 미리 구해 둔 역수.
+- cgroup `cpu.weight`(1~10000, 기본 100)도 내부에서 이 체계로 변환된다 (100 ↔ 1024).
+
+**Q. "renderer 약 20%, indexer 약 86%"는 왜 합이 100이 아닌가?**
+
+두 값의 기준 시간이 달랐다 (처음 설명의 오류).
+
+| | cpu_ms | 기준 시간 | 비율 |
+| --- | ---: | --- | ---: |
+| renderer | 1936 | 실행 시간 10초 | 19.4% |
+| indexer | 12037 | 실행 시간 **14초** | 86% |
+
+- indexer는 renderer보다 1초 먼저 시작, 3초 늦게 종료 → 약 4초는 혼자 CPU 사용.
+- 같이 돈 10초만 보면: indexer 12037 − 약 4000 ≈ 8040ms, renderer 1936ms → 합계 약 9976ms ≈ **100%**. CPU 0을 둘이 빈틈없이 나눠 썼다.
+- 정확한 표현: 같이 돈 10초 구간에서 renderer 약 19%, indexer 약 81%.
+
+**Q. 4ms 작업이 6.4ms로 늘어난 것은 어떻게 결정됐나? slice 3ms의 영향인가?**
+
+6.4ms는 평균을 역산한 값이다: 실행 1936ms ÷ 600 = 3.2ms, 대기 1938ms ÷ 600 = 3.2ms → frame당 약 6.4ms. slice 약 3ms로 설명하면 (**추정**):
+
+```
+t=0     renderer 깨어남 → lag 양수라 즉시 실행 (late ≈ 0)
+t≈3ms   renderer가 slice 소진 → indexer 차례                 [renderer 실행 ≈ 3ms]
+t=4ms   renderer의 "4ms 끝" 시각이 지나지만 CPU가 없어 모름
+t≈6ms   indexer가 slice 소진 → renderer가 CPU를 다시 받음     [renderer 대기 ≈ 3ms]
+        now_ns() 확인 → 이미 지났으므로 종료 → 잠듦          [추가 실행 ≈ 0.2ms]
+```
+
+- 실행 ≈ slice 3ms + 마지막 확인 0.2ms = 3.2ms, 대기 ≈ indexer의 slice 3ms.
+- 늘어난 2.4ms = indexer의 slice 한 번에서 이미 지나간 시간을 빼고 남은 만큼. **slice 길이가 frame 지연의 크기를 정한다.** slice가 1ms였다면 늘어나는 시간도 1ms 안팎.
+- 검증 방법:
+  - 실제 slice 값: `sudo cat /sys/kernel/debug/sched/base_slice_ns /sys/kernel/debug/sched/preempt`
+  - 단계 2 perf sched timehist에서 renderer와 indexer가 번갈아 실행된 시간 확인
 
 ## 현업 적용 포인트 (webOS 미디어 플레이어)
 
