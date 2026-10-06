@@ -149,7 +149,7 @@ struct timespec next = { .tv_sec  = t0 / 1000000000,     // L263
    - 기본 조건에서 경쟁 시 `rounds`가 단독보다 2.7배 많았던 것이 그 예다 (시간은 같아도 주파수 차이로 일한 양이 다름).
 2. **nice → weight 비율로 나눈다**: nice 0 = 1024, nice 10 ≈ 110 (한 단계에 약 1.25배).
    - runnable task끼리 weight 비율대로 시간을 나눈다. nice 0 둘 = 50:50, 조치 A(indexer nice 10) = 1024:110 ≈ 90:10.
-   - 자고 있는 task는 몫을 나누는 대상에서 빠진다. renderer가 주기의 75%를 자는 동안은 indexer가 CPU를 혼자 쓴다 → 둘이 같이 돈 10초 동안 renderer 약 19%, indexer 약 81% (아래 Q 참고).
+   - 자고 있는 task는 몫을 나누는 대상에서 빠진다. renderer가 주기의 75%를 자는 동안은 indexer가 CPU를 혼자 쓴다 → 둘이 같이 돈 10초 동안 renderer 약 19%, indexer 약 80% (아래 Q 참고).
    - **측정값으로 확인**: renderer가 frame 하나를 처리하는 동안 `exec_ms` 1936 / `wait_ms` 1938 → frame당 실행 3.2ms, 대기 3.2ms로 정확히 50:50. 4ms 작업이 6.4ms로 늘어난 이유는, 선점당한 사이에 끝나야 할 시각이 지나고 CPU를 다시 받은 뒤에야 끝난 것을 알아차리기 때문이다.
 3. **CFS → EEVDF**
    - vruntime(가상 실행 시간) = 실제 실행 시간 × 1024 / weight의 누적값. weight가 작으면 같은 시간을 써도 빨리 늘어난다.
@@ -186,7 +186,7 @@ const int sched_prio_to_weight[40] = {
 };
 ```
 
-- 이웃 값끼리 약 1.25배 → 경쟁하는 둘 중 한쪽 nice를 1 올리면 그쪽 CPU 몫이 약 10%p 줄어든다 (50:50 → 약 45:55).
+- 이웃 값끼리 약 1.25배 → 경쟁하는 둘 중 한쪽 nice를 1 올리면 그쪽 CPU 시간이 **약 11% 감소**(상대값). 몫으로는 50% → 44.5%, 5.5%p 감소 (아래 Q 계산 참고).
 - `sched_prio_to_wmult[]` = 2³² / weight. 나눗셈 대신 곱셈으로 계산하려고 미리 구해 둔 역수.
 - cgroup `cpu.weight`(1~10000, 기본 100)도 내부에서 이 체계로 변환된다 (100 ↔ 1024).
 
@@ -200,8 +200,28 @@ const int sched_prio_to_weight[40] = {
 | indexer | 12037 | 실행 시간 **14초** | 86% |
 
 - indexer는 renderer보다 1초 먼저 시작, 3초 늦게 종료 → 약 4초는 혼자 CPU 사용.
-- 같이 돈 10초만 보면: indexer 12037 − 약 4000 ≈ 8040ms, renderer 1936ms → 합계 약 9976ms ≈ **100%**. CPU 0을 둘이 빈틈없이 나눠 썼다.
-- 정확한 표현: 같이 돈 10초 구간에서 renderer 약 19%, indexer 약 81%.
+- 같이 돈 10초 구간 계산:
+
+```
+시간(s)   0      1                              11          14
+indexer   |======|==============================|===========|   14초
+renderer         |==============================|              10초 (1초 뒤 시작)
+          혼자   |←      둘이 같이 돈 10초      →|   혼자
+          약1초                                    약3초
+```
+
+  1. indexer 혼자 = 약 1 + 3 = 4초 → CPU 0 단독 사용이므로 약 4000ms로 가정
+  2. 같이 돈 10초 동안 indexer = 12037 − 4000 = 8037ms
+  3. 같은 10초 동안 renderer = 1936ms
+  4. 합계 9973ms = 10000ms의 99.7% → CPU 0을 둘이 빈틈없이 나눠 썼다
+
+  | 같이 돈 10초 | 계산 | 비율 |
+  | --- | --- | ---: |
+  | renderer | 1936 / 10000 | **19.4%** |
+  | indexer | 8037 / 10000 | **80.4%** |
+  | 그 외 (다른 system task, 오차) | 27 / 10000 | 0.3% |
+
+  "혼자 돈 4초 = 4000ms" 가정의 오차는 단계 2 perf timehist로 확인 가능.
 
 **Q. 4ms 작업이 6.4ms로 늘어난 것은 어떻게 결정됐나? slice 3ms의 영향인가?**
 
@@ -220,6 +240,52 @@ t≈6ms   indexer가 slice 소진 → renderer가 CPU를 다시 받음     [rend
 - 검증 방법:
   - 실제 slice 값: `sudo cat /sys/kernel/debug/sched/base_slice_ns /sys/kernel/debug/sched/preempt`
   - 단계 2 perf sched timehist에서 renderer와 indexer가 번갈아 실행된 시간 확인
+
+**Q. weight가 1.25배 차이인데 왜 "약 10%"인가? (계산)**
+
+```
+weight:  nice 0 = 1024,  nice 1 = 820     (1024 / 820 = 1.249 ≈ 1.25배)
+nice 0 몫 = 1024 / 1844 = 55.5%
+nice 1 몫 =  820 / 1844 = 44.5%
+```
+
+| 비교 방법 | 값 |
+| --- | --- |
+| nice를 올린 task의 몫 변화 | 50% → 44.5% = **5.5%p 감소** |
+| 그 task 자신의 CPU 시간 기준 | 44.5 / 50 = 0.89 → **약 11% 감소** |
+| 두 task 사이의 차이 | 55.5 − 44.5 = **11%p** |
+
+- kernel 주석의 "nice 1단계 = 약 10%"는 **자기 CPU 시간이 약 10% 줄어든다**(상대적 감소)는 뜻이다. "10%p 감소"는 틀린 표현이었다.
+- 1.25를 고른 이유: 비율이 r이면 내 몫 = 1/(1+r). r = 1.25 → 0.444, 즉 한 단계에 약 10%씩 줄어들게 설계.
+- 조치 A(nice 10): indexer = 110 / 1134 = 9.7%, renderer = 1024 / 1134 = 90.3%.
+
+**Q. 쉬고 나온 renderer의 lag은? 깨어난 직후 CPU를 몰아서 쓰나?**
+
+**EEVDF에서는 쉬는 동안 lag이 쌓이지 않는다. 깨어날 때 lag ≈ 0.** 몰아서 쓰지 않으며, 이것이 6.4ms를 뒷받침한다.
+
+lag 규칙 (6.6 이상, 이 PC는 7.0):
+- **잠들 때의 lag을 저장했다가 깨어날 때 돌려준다.** 자는 동안 "못 받은 몫"이 늘어나지 않는다.
+- 저장되는 lag에는 상한이 있다: 대략 ± max(2 × slice, tick) ≈ 6ms (가상 시간).
+- 잠들 때 lag이 음수(몫보다 더 씀)면, 6.12부터의 **delayed dequeue** 때문에 바로 runqueue에서 빠지지 않고 lag이 0으로 회복된 뒤 빠진다 → 음수 lag을 들고 깨어나지 않는다.
+
+renderer가 잠들 때의 lag (slice 3ms, weight가 같은 두 task 기준):
+
+```
+                        renderer 실행   가상 시간 V    renderer lag
+frame 시작 (깨어남)           0             0             0
+renderer 3ms 실행           +3          +1.5          -1.5   (몫보다 더 씀)
+indexer  3ms 실행            -          +1.5           0.0   (다시 0으로)
+renderer 0.2ms 실행 후 잠듦  +0.2        +0.1          -0.1   → delayed dequeue로 0
+```
+
+(V = runqueue 전체의 가중 평균 진행도. 둘이 실행 중이면 한 task가 3ms 쓸 때 V는 1.5 진행.)
+
+→ renderer는 lag ≈ 0으로 잠들고 lag ≈ 0으로 깨어난다. 12ms를 쉬어도 특별히 몫이 생기지 않는다.
+
+- **6.4ms와 일치**: 깨어난 renderer는 보너스 없이 slice 하나(3ms)를 받고 indexer와 번갈아 실행 → 3.2 실행 + 3.2 대기 = 6.4ms.
+- 몰아서 쓰는 보너스가 있었다면 renderer는 4ms를 끊김 없이 쓰고 frame도 4ms에 끝났을 것이다.
+- 예전 CFS에는 **sleeper credit**(깨어난 task의 vruntime을 최소값보다 앞당겨 우선권 부여)이 있었다. EEVDF는 이를 없애고 lag 기반으로 바꿨다.
+- **미해결**: lag 0이면 깨어난 renderer와 indexer의 deadline이 비슷해서 이론상 즉시 선점하지 못할 수도 있다. 그런데 `late_p99u` 71µs → 대부분 즉시 CPU를 받았다. kernel 7.0 scheduler 기능(즉시 선점 관련 옵션, 선점 방식) 때문일 가능성 → `sudo cat /sys/kernel/debug/sched/{base_slice_ns,preempt,features}`와 timehist로 확인할 것.
 
 ## 현업 적용 포인트 (webOS 미디어 플레이어)
 
