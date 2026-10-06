@@ -22,6 +22,7 @@ git checkout study && git merge main
 
 ```
 study/WeekN/
+├── docs/           원본 docx를 md로 변환한 문서
 ├── notes.md        개념 정리 (강의 내용, 핵심 질문, 참고 자료)
 ├── lab.md          실습 기록 (명령, 관측값, 해석)
 ├── assignment.md   과제 설계·구현 메모·결과
