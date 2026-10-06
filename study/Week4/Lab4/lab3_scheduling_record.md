@@ -113,6 +113,28 @@ for (i = 0; now_ns() < end; i++) {
 3. **지연 측정 (①)**: 깨어나 실제로 실행된 시각 − 원래 시작해야 할 시각을 frame마다 기록하고, 정렬해서 99번째 백분위를 `late_p99u`로 출력한다. timer가 울린 뒤 scheduler가 CPU를 주기까지의 대기와 C-state 탈출 시간이 포함된다.
 4. **miss 판정 (③)**: 작업이 끝난 시각이 다음 frame 시작 시각을 넘으면 miss. 이때 다음 `clock_nanosleep`은 이미 지난 시각이라 바로 반환된다 → 늦은 frame을 바로 따라잡는 구조.
 
+**Q. `next`의 초기값은?**
+
+측정 시작 시각 `t0`를 `timespec`(초 + ns)으로 바꾼 값 (L253, L263).
+
+```c
+uint64_t t0 = now_ns(), end = t0 + run_ns;      // L253: 측정 시작 시각 (ns)
+struct timespec next = { .tv_sec  = t0 / 1000000000,     // L263
+                         .tv_nsec = t0 % 1000000000 };
+```
+
+`now_ns()`와 `clock_nanosleep` 모두 `CLOCK_MONOTONIC`을 쓰므로 기준이 같다.
+
+| frame i | 시작 기준 `expected` | 작업 후 `next` (잠들었다 깰 시각) |
+| --- | --- | --- |
+| 0 | t0 | t0 + 16.667ms |
+| 1 | t0 + 16.667ms | t0 + 33.333ms |
+| i | t0 + i × P | t0 + (i+1) × P |
+
+- frame 0은 잠들지 않고 바로 시작한다 (첫 `late` ≈ 0).
+- `next`는 항상 **다음 frame의 `expected`와 같다** → `late = start - expected` = "깨워 달라고 한 시각보다 얼마나 늦게 실행됐나".
+- `next`는 실제로 깨어난 시각이 아니라 이전 `next`에 주기를 더해 갱신한다. 그래서 한 번 늦게 깨어나도 지연이 다음 frame으로 쌓이지 않는다.
+
 **실제 플레이어와 다른 점**
 - 실제 render thread는 timer 대신 vsync, 디코더 출력 같은 이벤트를 기다리는 경우가 많다.
 - 실제 작업은 "frame 1장 처리"처럼 **양이 정해진 일**이다. CPU를 빼앗기면 처리 시간 자체가 늘어나 miss로 바로 이어진다.
