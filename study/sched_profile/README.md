@@ -52,12 +52,15 @@ GitHub fork의 `study` 브랜치를 지우면 이 URL은 동작하지 않을 수
 
 | 섹션 | 내용 | 무엇을 판단하나 |
 | --- | --- | --- |
-| 1. kernel | kernel 버전, CFS/EEVDF 구분, `CONFIG_HZ`(config 없으면 jiffies로 HZ 실측), preempt 방식, sched 관련 config | tick 간격, 선점 방식, scheduler 알고리즘 |
+| 1. kernel | kernel 버전, CFS/EEVDF 구분, `CONFIG_HZ`(config 없으면 jiffies로 HZ 실측), preempt 방식, sched 관련 config, kernel cmdline의 scheduling 관련 부팅 옵션(`isolcpus`, `nohz_full`, `irqaffinity` 등) | tick 간격, 선점 방식, scheduler 알고리즘, CPU 격리 여부 |
 | 2. scheduler tunables | `/proc/sys/kernel/sched_*`, RT throttling, debugfs의 slice 관련 값과 features, sched_ext, nice→weight 표 | slice 길이(경쟁 시 frame 지연 크기), RT task 실행 상한 |
-| 3. CPU | core 구성, core별 `cpu_capacity`(big.LITTLE), cpufreq governor·주파수, cache, cpuidle 상태별 깨어남 지연 | core 간 성능 차이, 절전으로 인한 wakeup 지연 |
+| 2. (유도) base slice derivation | `base_slice = 기준값 × factor`를 CPU 수와 `tunable_scaling`으로 계산해 실제값과 비교. 기준값이 기본(0.75/0.70ms)인지 판정. debugfs를 못 읽으면 `/proc/self/sched`의 `se.slice`로 대신 구함(root 불필요) | slice가 왜 그 값인지, 누가 바꿨는지 |
+| 2. (유도) effective switch granularity | HRTICK이 꺼져 있으면 slice 끝을 tick에서만 확인 → 실제 연속 실행 = slice를 tick 단위로 올림 | 경쟁 시 한 번에 밀리는 시간 (예: slice 2.25ms + tick 4ms → 약 4ms) |
+| 2. features / autogroup / sched domains | 주요 feature on/off와 의미, autogroup(켜져 있으면 nice가 같은 세션 안에서만 비교됨), load balancing 범위 | 깨어날 때 선점 조건, nice가 기대대로 듣는지 |
+| 3. CPU | core 구성, core별 `cpu_capacity`(big.LITTLE), cpufreq governor·주파수, cache, cpuidle 상태별 깨어남 지연, IRQ 상위 10개의 CPU별 분포 | core 간 성능 차이, 절전으로 인한 wakeup 지연, interrupt가 몰린 CPU |
 | 4. cgroup | v1/v2 구분, 그룹별 `cpu.weight`/`cpu.max`/`cpuset.cpus`/`uclamp.min` (v1은 `cpu.shares` 등). 기본값과 다른 그룹에 `*` 표시 | player가 속한 그룹에 제한이 걸려 있는지 |
 | 5. RT·특수 정책 thread | policy가 OTHER가 아닌 모든 thread (FIFO/RR/DEADLINE/BATCH/IDLE), RT 우선순위 높은 순 | BSP에 이미 FIFO로 도는 thread가 있는지 (nice 조정으로는 못 이김) |
-| 6. 대상 process (인자 줄 때) | thread별 policy, rtprio, nice, 실행 CPU, `schedstat`의 실행/대기 시간, 자발적/비자발적 context switch, 허용 CPU | runqueue 대기(`wait_ms`)가 큰 thread, 선점을 많이 당하는 thread |
+| 6. 대상 process (인자 줄 때) | thread별 policy, rtprio, nice, 실행 CPU, `schedstat`의 실행/대기 시간, 자발적/비자발적 context switch, thread별 slice(`se.slice`, 개별 slice 설정 시 다름), timer slack(root), 허용 CPU | runqueue 대기(`wait_ms`)가 큰 thread, 선점을 많이 당하는 thread |
 
 ## 활용 예: 재생 중 frame drop 분석
 

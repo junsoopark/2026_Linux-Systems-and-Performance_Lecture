@@ -84,12 +84,21 @@ if [ -r /proc/timer_list ]; then
             n = 100; split("100 250 300 1000", c, " ")
             for (i = 1; i <= 4; i++) if ((d - c[i]) * (d - c[i]) < (d - n) * (d - n)) n = c[i]
             printf "%d measured -> likely CONFIG_HZ=%d (tick %.1f ms)", d, n, 1000 / n }')"
+        HZG=$(awk -v d=$((j2 - j1)) 'BEGIN { n = 100; split("100 250 300 1000", c, " ")
+            for (i = 1; i <= 4; i++) if ((d - c[i]) * (d - c[i]) < (d - n) * (d - n)) n = c[i]; print n }')
     else
         kv "HZ (approx)" "(jiffies not found in /proc/timer_list)"
     fi
 else
     kv "HZ (approx)" "(no permission: run as root)"
 fi
+
+[ -z "$HZG" ] && [ -n "$cfg" ] && HZG=$($cfg 2>/dev/null | sed -n 's/^CONFIG_HZ=//p')
+
+sub "kernel cmdline (scheduling-related boot params)"
+kv "cmdline" "$(rd /proc/cmdline | cut -c1-200)"
+sp=$(rd /proc/cmdline | tr ' ' '\n' | grep -E '^(isolcpus|nohz|nohz_full|rcu_nocbs|irqaffinity|preempt|threadirqs|maxcpus|nr_cpus|nosmt|sched_|cpufreq|cpuidle|idle|processor\.max_cstate|intel_idle|nmi_watchdog|skew_tick|clocksource|hz)' | tr '\n' ' ')
+kv "  sched-related params" "${sp:-(none: defaults)}"
 
 # ------------------------------------------------------------------ 2
 hr "2. scheduler tunables"
@@ -129,6 +138,83 @@ fi
 sub "sched_ext"
 if [ -e /sys/kernel/sched_ext/state ]; then show "sched_ext state" /sys/kernel/sched_ext/state
 else kv "sched_ext state" "(not built)"; fi
+
+sub "base slice derivation (kernel/sched/fair.c update_sysctl)"
+echo "  base_slice = normalized_base x factor"
+echo "  factor by tunable_scaling: 0 NONE=1, 1 LOG=1+log2(min(ncpu,8)) (default), 2 LINEAR=min(ncpu,8)"
+echo "  normalized_base default: 0.75 ms (6.6+), 0.70 ms on newer kernels"
+ncpu=$(rd /sys/devices/system/cpu/online | tr ',' '\n' | awk -F- '{ n += ($2 == "" ? 1 : $2 - $1 + 1) } END { print n + 0 }')
+ts=$(cat "$D/tunable_scaling" 2>/dev/null); tsnote=""
+[ -z "$ts" ] && { ts=1; tsnote=" (assumed default, debugfs unreadable)"; }
+c8=$ncpu; [ "$c8" -gt 8 ] && c8=8
+case $ts in
+    0) factor=1 ;;
+    2) factor=$c8 ;;
+    *) l=0; v=$c8; while [ "$v" -gt 1 ]; do v=$((v / 2)); l=$((l + 1)); done; factor=$((1 + l)) ;;
+esac
+kv "online CPUs (capped at 8)" "$ncpu -> $c8"
+kv "tunable_scaling" "$ts$tsnote"
+kv "factor" "$factor"
+bs=$(cat "$D/base_slice_ns" 2>/dev/null); bsrc="debugfs base_slice_ns"
+if [ -z "$bs" ]; then   # no root: a normal task's se.slice equals base_slice unless a custom slice is set
+    bs=$(awk '/^se.slice/ { print $3 }' /proc/self/sched 2>/dev/null); bsrc="/proc/self/sched se.slice (no root needed)"
+fi
+if [ -n "$bs" ]; then
+    kv "actual base slice" "$(awk -v n="$bs" 'BEGIN { printf "%.3f ms", n / 1e6 }')  [$bsrc]"
+    kv "  -> normalized_base" "$(awk -v n="$bs" -v f="$factor" 'BEGIN { b = n / f / 1e6; printf "%.3f ms (= actual / factor)", b
+        if (b > 0.749 && b < 0.751) printf "  default 0.75"; else if (b > 0.699 && b < 0.701) printf "  default 0.70"; else printf "  NON-DEFAULT (tuned via debugfs?)" }')"
+else
+    kv "actual base slice" "(unknown: no debugfs access and no se.slice in /proc/self/sched)"
+fi
+
+sub "effective switch granularity between competing fair tasks"
+feat=$(cat "$D/features" 2>/dev/null)
+if [ -n "$bs" ] && [ -n "$HZG" ]; then
+    case " $feat " in
+        *" HRTICK "*) kv "slice end enforced by" "hrtimer (HRTICK on) -> runs ~= base slice" ;;
+        *" NO_HRTICK "*|*)
+            kv "slice end enforced by" "scheduler tick (HRTICK off or unknown) -> checked every $(awk -v h="$HZG" 'BEGIN { printf "%.1f", 1000 / h }') ms"
+            kv "  -> expected run per turn" "$(awk -v n="$bs" -v h="$HZG" 'BEGIN { s = n / 1e6; t = 1000 / h; r = t * int((s + t - 0.000001) / t); printf "~%.1f ms (base slice %.2f ms rounded up to tick %.1f ms)", r, s, t }')" ;;
+    esac
+else
+    echo "  (need base slice and HZ: run as root)"
+fi
+
+sub "key fair-class features (on/off from debugfs features)"
+if [ -n "$feat" ]; then
+    for f in PLACE_LAG:"keep lag across sleep (no sleeper bonus)" \
+             RUN_TO_PARITY:"current task runs to 0-lag/slice end before wakeup preemption" \
+             PREEMPT_SHORT:"task with shorter custom slice may preempt on wakeup" \
+             WAKEUP_PREEMPTION:"wakeup preemption enabled" \
+             DELAY_DEQUEUE:"negative-lag sleeper stays queued until eligible" \
+             DELAY_ZERO:"clip lag to 0 for delayed-dequeue tasks" \
+             HRTICK:"precise slice end via hrtimer" \
+             NEXT_BUDDY:"prefer just-woken task" \
+             UTIL_EST:"utilization estimate for freq/placement" \
+             TTWU_QUEUE:"remote wakeups queued via IPI"; do
+        name=${f%%:*}; desc=${f#*:}
+        case " $feat " in
+            *" $name "*) st=on ;;
+            *" NO_$name "*) st=off ;;
+            *) st=- ;;
+        esac
+        printf '  %-18s %-4s %s\n' "$name" "$st" "$desc"
+    done
+else
+    echo "  (features unreadable: run as root)"
+fi
+
+sub "autogroup (if on, nice compares only within the same session group)"
+show "sched_autogroup_enabled" /proc/sys/kernel/sched_autogroup_enabled
+
+sub "sched domains (load balancing scope, debugfs)"
+if [ -d "$D/domains/cpu0" ]; then
+    for d in "$D"/domains/cpu0/domain*; do
+        [ -d "$d" ] && kv "  cpu0 ${d##*/}" "name=$(rd "$d/name") flags=$(rd "$d/flags" | cut -c1-80)"
+    done
+else
+    echo "  (not readable: run as root)"
+fi
 
 sub "nice -> weight (kernel/sched/core.c sched_prio_to_weight, fixed since 2.6.23)"
 echo "  nice -20:88761 -10:9548 -5:3121 0:1024 1:820 5:335 10:110 15:36 19:15"
@@ -173,6 +259,18 @@ for s in /sys/devices/system/cpu/cpu0/cpuidle/state*; do
     [ -d "$s" ] || continue
     kv "  ${s##*/} $(rd "$s/name")" "latency=$(rd "$s/latency")us residency=$(rd "$s/residency")us disable=$(rd "$s/disable")"
 done
+
+sub "IRQ (interrupt time steals CPU from tasks on that CPU)"
+kv "default_smp_affinity" "$(rd /proc/irq/default_smp_affinity)"
+if [ -r /proc/interrupts ]; then
+    echo "  top 10 IRQs by total count (per-CPU counts):"
+    awk 'NR == 1 { nc = NF; next }
+         { t = 0; per = ""; for (i = 2; i <= nc + 1 && i <= NF; i++) { if ($i !~ /^[0-9]+$/) break; t += $i; per = per " " $i }
+           desc = ""; for (j = i; j <= NF; j++) desc = desc " " $j
+           if (t > 0) printf "%d|%s|%s|%s\n", t, $1, per, desc }' /proc/interrupts \
+        | sort -t'|' -k1,1nr | head -n 10 \
+        | awk -F'|' '{ printf "  %-8s total=%-12s cpus:%s  %s\n", $2, $1, $3, substr($4, 1, 50) }'
+fi
 
 # ------------------------------------------------------------------ 4
 hr "4. cgroup"
@@ -247,8 +345,9 @@ if [ -n "$TARGET" ]; then
         kv "  Cpus_allowed_list" "$(grep Cpus_allowed_list /proc/$pid/status 2>/dev/null | awk '{print $2}')"
         echo "  exec_ms/wait_ms/slices: cumulative /proc/<tid>/schedstat (wait = runqueue wait)"
         echo "  vol/invol: voluntary/involuntary context switches (invol = preempted)"
-        printf '  %-8s %-16s %-9s %-6s %-5s %-4s %-10s %-10s %-8s %-8s %-8s %s\n' \
-            tid comm policy rtprio nice cpu exec_ms wait_ms slices vol invol allowed
+        echo "  slice_ms: se.slice (custom slice via sched_setattr shows here), tslack_us: timer slack (wakeup coalescing; other tasks need root)"
+        printf '  %-8s %-16s %-9s %-6s %-5s %-4s %-10s %-10s %-8s %-8s %-8s %-8s %-9s %s\n' \
+            tid comm policy rtprio nice cpu exec_ms wait_ms slices vol invol slice_ms tslack_us allowed
         for t in /proc/$pid/task/[0-9]*; do
             set -- $(stat_fields "$t/stat")
             pol=${39:-0}; tprio=${38}; tnice=${17}; tcpu=${37}
@@ -257,8 +356,10 @@ if [ -n "$TARGET" ]; then
             vol=$(grep '^voluntary_ctxt_switches' "$t/status" 2>/dev/null | awk '{print $2}')
             inv=$(grep '^nonvoluntary_ctxt_switches' "$t/status" 2>/dev/null | awk '{print $2}')
             alw=$(grep Cpus_allowed_list "$t/status" 2>/dev/null | awk '{print $2}')
-            printf '  %-8s %-16s %-9s %-6s %-5s %-4s %-10s %-10s %-8s %-8s %-8s %s\n' \
-                "${t##*/}" "$(rd "$t/comm")" "$(policy_name "$pol")" "$tprio" "$tnice" "$tcpu" "$ex" "$wt" "$sl" "$vol" "$inv" "$alw"
+            tsl=$(awk '/^se.slice/ { printf "%.2f", $3 / 1e6 }' "$t/sched" 2>/dev/null); [ -z "$tsl" ] && tsl=-
+            tsk=$(awk '{ printf "%.0f", $1 / 1e3 }' "/proc/${t##*/}/timerslack_ns" 2>/dev/null); [ -z "$tsk" ] && tsk=-
+            printf '  %-8s %-16s %-9s %-6s %-5s %-4s %-10s %-10s %-8s %-8s %-8s %-8s %-9s %s\n' \
+                "${t##*/}" "$(rd "$t/comm")" "$(policy_name "$pol")" "$tprio" "$tnice" "$tcpu" "$ex" "$wt" "$sl" "$vol" "$inv" "$tsl" "$tsk" "$alw"
         done
     done
     echo

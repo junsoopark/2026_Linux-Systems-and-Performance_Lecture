@@ -576,6 +576,34 @@ indexer  = 38% × 50% + 62%   = 81.2%   (실측 80.4%)
    - 이번 실습의 renderer/indexer 구도가 앞단 thread에서 그대로 재현된다: feeding thread가 백그라운드 작업에 밀리면 디코더 입력이 바닥나고(underflow) frame drop으로 이어진다.
    - Netflix 인증에서 Playback Platform Metrics로 frame drop이 보고되면 → schedstat 대기 시간 → perf sched → 조치 비교 순으로 원인을 좁힌다.
 
+**Q. slice는 왜 그 값인가? (base slice 유도 공식) — 그리고 이 PC의 slice 정정**
+
+`kernel/sched/fair.c`의 `update_sysctl()`:
+
+```
+base_slice = normalized_base x factor
+factor (tunable_scaling): 0 NONE = 1
+                          1 LOG  = 1 + log2(min(online CPU 수, 8))   <- 기본값
+                          2 LINEAR = min(online CPU 수, 8)
+normalized_base: 0.75ms (6.6 도입 시), 이 PC의 kernel 7.0에서는 0.70ms
+```
+
+- CPU가 많을수록 slice를 길게 → CPU당 경쟁이 줄어드는 만큼 task 교체 비용을 줄이려는 설계. CPU hotplug 때 다시 계산되고, debugfs에 직접 쓰면 공식과 달라진다.
+- 예: CPU 4개, LOG → factor 3 → 0.75 × 3 = **2.25ms**
+
+**정정 (이 PC)**: 앞의 Q&A들은 slice를 0.75 × 4 = 3ms로 가정했다. 그런데 `/proc/self/sched`의 `se.slice`를 읽어 보니 **2.8ms** = 0.70 × 4 였다. kernel 7.0에서 기준값이 0.70ms로 바뀐 것으로 보인다.
+- 실측 연속 실행 3.17ms와 비교하면: slice 2.8ms가 끝나도 tick(1ms) 경계에서 교체되므로 실제 연속 실행 = 2.8ms를 1ms 단위로 올린 **약 3ms** + 교체 처리 → 3.17ms. "3ms slice" 가정보다 이 설명이 더 정확하다.
+- 앞의 "6.4ms" 분석의 결론(slice 1회분만큼 밀린다)은 그대로 유효하고, 숫자의 근거만 "slice 3ms" → "slice 2.8ms가 tick 단위로 올림된 약 3ms"로 바뀐다.
+
+**실제 연속 실행 시간 = slice를 tick 단위로 올림** (HRTICK이 꺼져 있을 때): slice 끝을 정확한 타이머로 끊지 않고 tick마다 확인하기 때문이다.
+
+| | base slice | tick | 예상 연속 실행 |
+| --- | ---: | ---: | ---: |
+| 이 PC (HZ 1000) | 2.8ms | 1ms | 약 3ms (실측 3.17ms) |
+| HZ 250 환경 예 | 2.25ms | 4ms | 약 4ms |
+
+→ `study/sched_profile/sched_profile.sh` 섹션 2에서 이 유도를 자동으로 계산한다 (root 없이도 `se.slice`로 가능).
+
 ## 현업 적용 포인트 (webOS 미디어 플레이어)
 
 - **CPU 사용률이 아니라 schedstat의 `wait_ms`(runqueue 대기)와 비자발적 context switch를 본다.** renderer는 CPU의 20%만 쓰는데도 frame마다 3ms씩 대기했다. `top`으로는 보이지 않는다.
