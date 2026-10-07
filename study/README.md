@@ -2,7 +2,13 @@
 
 원본 강의 자료(`WeekN/`)는 **수정하지 않고**, 정리·실습 결과는 모두 이 `study/` 아래에 둡니다.
 
-## 브랜치 규칙
+## 저장소와 브랜치 규칙
+
+| remote | 주소 | 용도 |
+| --- | --- | --- |
+| `gitlab` | gitlab.com/ParkJunsoo/2026_Linux-Systems-and-Performance_Lecture (**private**) | **기본 저장소**. `main`, `study` 모두 여기로 push |
+| `upstream` | github.com/hh277z/2026_Linux-Systems-and-Performance_Lecture | 강의 원본. 새 주차 자료를 받아오기만 함 |
+| `origin` | github.com/junsoopark/... (공개 fork) | 처음 fork한 저장소. 공개 fork는 private 전환이 불가해 GitLab으로 이전 |
 
 | 브랜치 | 용도 |
 | --- | --- |
@@ -11,10 +17,12 @@
 
 ```bash
 # 새 주차 자료가 올라왔을 때
-git checkout main && git pull upstream main && git push origin main
-git checkout study && git merge main
+git checkout main && git pull upstream main && git push gitlab main
+git checkout study && git merge main && git push        # study는 gitlab/study를 추적
 ./study/new-week.sh 5          # study/Week5 를 원본과 같은 구조로 생성
 ```
+
+> 회사 디바이스 측정 결과 등은 private 저장소(GitLab)에만 올린다.
 
 원본 파일은 `study/`에서만 복사본으로 다루므로 merge 충돌이 나지 않습니다.
 

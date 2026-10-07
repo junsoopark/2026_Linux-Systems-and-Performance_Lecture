@@ -12,46 +12,41 @@ webOS 등 타겟 보드에서 성능 이슈를 분석하기 전에 **이 보드�
 
 ## 다운로드 없이 바로 실행
 
-GitHub의 raw URL을 받아 셸에 바로 넘긴다. 파일이 디바이스에 저장되지 않는다.
+이 저장소는 private(GitLab)이라 인증 없이 받을 수 있는 URL이 없다. 디바이스에 파일을 저장하거나 토큰을 넣지 않고 실행하는 방법은 다음과 같다.
 
-- 아래 명령은 이 스크립트를 추가한 커밋으로 **고정**된 URL이다. 나중에 스크립트가 바뀌어도 같은 내용이 실행된다.
-- 최신 버전을 쓰려면 URL의 커밋 해시를 브랜치 이름 `study`로 바꾼다.
+**1) PC의 스크립트를 ssh로 넘기기 (기본)**
+
+PC에 있는 파일을 ssh 표준입력으로 디바이스 셸에 넘긴다. 디바이스는 인터넷 연결이 필요 없고 ssh 접속만 되면 된다.
+
+```bash
+S=study/sched_profile/sched_profile.sh          # repo 루트 기준
+
+ssh root@<device_ip> 'sh -s' < $S                               # 시스템 전체
+ssh root@<device_ip> 'sh -s -- <pid|process_name>' < $S         # + 특정 process의 thread별 상세
+ssh root@<device_ip> 'sh -s' < $S > sched_profile_<board>.txt   # 결과를 PC에 저장
+```
+
+특정 커밋 버전으로 실행하려면 작업 트리 대신 git에서 바로 꺼내 넘긴다.
+
+```bash
+git show <commit>:study/sched_profile/sched_profile.sh | ssh root@<device_ip> 'sh -s'
+```
+
+**2) 디바이스 셸에 직접 붙여넣기 (ssh 파이프가 안 될 때)**
+
+시리얼 콘솔 등에서는 디바이스에 `cat > /tmp/sp.sh` 입력 후 스크립트 내용을 붙여넣고 Ctrl-D, `sh /tmp/sp.sh`. 출력이 ASCII라 콘솔 locale과 무관하다.
+
+**3) GitHub 공개 URL (공개 fork의 `study` 브랜치가 남아 있는 동안만)**
 
 ```bash
 URL=https://raw.githubusercontent.com/junsoopark/2026_Linux-Systems-and-Performance_Lecture/067ceadf7d0576d2cc56274cfc784eddc2555db7/study/sched_profile/sched_profile.sh
+curl -fsSL "$URL" | sh                          # 디바이스에 curl이 있을 때
+wget -qO- "$URL" | sh                           # wget만 있을 때 (HTTPS 미지원 빌드 주의)
 ```
 
-**1) 디바이스에 curl이 있을 때**
+GitHub fork의 `study` 브랜치를 지우면 이 URL은 동작하지 않을 수 있다.
 
-```bash
-curl -fsSL "$URL" | sh                          # 시스템 전체
-curl -fsSL "$URL" | sh -s -- <pid|process_name> # + 특정 process의 thread별 상세
-curl -fsSL "$URL" | sh > /tmp/sched_profile.txt # 결과 파일로 저장
-```
-
-**2) curl이 없고 wget만 있을 때** (busybox wget은 HTTPS를 지원하지 않는 빌드도 있음)
-
-```bash
-wget -qO- "$URL" | sh
-wget -qO- "$URL" | sh -s -- <pid|process_name>
-```
-
-**3) 디바이스가 인터넷에 못 나갈 때: PC에서 받아 ssh로 넘기기**
-
-PC가 스크립트를 받아 ssh의 표준입력으로 디바이스에 넘긴다. 디바이스에는 ssh 접속만 되면 된다.
-
-```bash
-curl -fsSL "$URL" | ssh root@<device_ip> 'sh -s'
-curl -fsSL "$URL" | ssh root@<device_ip> 'sh -s -- <pid|process_name>'
-curl -fsSL "$URL" | ssh root@<device_ip> 'sh -s' > sched_profile_<board>.txt   # 결과를 PC에 저장
-```
-
-**root 권한** (debugfs 항목까지 보려면)
-
-```bash
-curl -fsSL "$URL" | sudo sh                     # sudo가 있는 환경
-# 디바이스 root 셸이면 그대로 실행하면 된다
-```
+**root 권한**: debugfs와 `/proc/timer_list` 항목까지 보려면 root로 실행한다 (`ssh root@...` 또는 디바이스 root 셸).
 
 ## 출력 섹션
 
@@ -68,12 +63,12 @@ curl -fsSL "$URL" | sudo sh                     # sudo가 있는 환경
 
 ```bash
 # 1. 보드 기준값 저장 (한 번)
-curl -fsSL "$URL" | ssh root@<device_ip> 'sh -s' > board_baseline.txt
+ssh root@<device_ip> 'sh -s' < $S > board_baseline.txt
 
 # 2. 재생 중 player process 상태를 두 번 찍어 thread별 wait_ms 증가량 비교
-curl -fsSL "$URL" | ssh root@<device_ip> 'sh -s -- <player_process_name>' > t0.txt
+ssh root@<device_ip> 'sh -s -- <player_process_name>' < $S > t0.txt
 #    (이슈 재현)
-curl -fsSL "$URL" | ssh root@<device_ip> 'sh -s -- <player_process_name>' > t1.txt
+ssh root@<device_ip> 'sh -s -- <player_process_name>' < $S > t1.txt
 ```
 
 `wait_ms`가 크게 늘어난 thread가 CPU를 기다린 thread다. 이후 perf sched로 경쟁 task를 찾는 과정은 `../Week4/Lab4/lab3_scheduling_record.md`를 참고한다.
