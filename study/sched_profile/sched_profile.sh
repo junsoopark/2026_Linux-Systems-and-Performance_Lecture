@@ -319,14 +319,19 @@ fi
 hr "5. RT / special-policy threads (policy != OTHER) - e.g. BSP FIFO threads"
 echo "  order: FIFO/RR -> DEADLINE -> BATCH/IDLE, higher rtprio first"
 printf '  %-8s %-8s %-9s %-6s %-5s %-4s %s\n' pid tid policy rtprio nice cpu comm
-for t in /proc/[0-9]*/task/[0-9]*; do
-    st="$t/stat"; [ -r "$st" ] || continue
-    set -- $(stat_fields "$st")
-    pol=${39:-0}; [ "$pol" = 0 ] && continue
-    pid=${t#/proc/}; pid=${pid%%/*}; tid=${t##*/}
-    case $pol in 1|2) rank=1 ;; 6) rank=2 ;; *) rank=3 ;; esac
-    printf '%s %03d  %-8s %-8s %-9s %-6s %-5s %-4s %s\n' "$rank" "$((99 - ${38}))" "$pid" "$tid" "$(policy_name "$pol")" "${38}" "${17}" "${37}" "$(rd "$t/comm")"
-done | sort -k1,1n -k2,2n -k3,3n | cut -d' ' -f3- | sed 's/^/ /' > "$TMPF"
+# one grep + one awk for all threads (no per-thread fork; fast on slow CPUs with many threads)
+# grep -H prefixes "path:"; comm may contain spaces/parens, so cut at the LAST ")".
+grep -H '' /proc/[0-9]*/task/[0-9]*/stat 2>/dev/null | awk '
+    { i = index($0, "/stat:"); path = substr($0, 1, i + 4); rest = substr($0, i + 6)
+      split(path, a, "/"); pid = a[3]; tid = a[5]
+      for (j = length(rest); j > 0; j--) if (substr(rest, j, 1) == ")") break
+      comm = substr(rest, index(rest, "(") + 1, j - index(rest, "(") - 1)
+      n = split(substr(rest, j + 2), f, " ")
+      pol = f[39] + 0; if (pol == 0) next
+      pn = (pol == 1) ? "FIFO" : (pol == 2) ? "RR" : (pol == 3) ? "BATCH" : (pol == 5) ? "IDLE" : (pol == 6) ? "DEADLINE" : (pol == 7) ? "EXT" : "?" pol
+      rank = (pol == 1 || pol == 2) ? 1 : (pol == 6) ? 2 : 3
+      printf "%d %03d %08d  %-8s %-8s %-9s %-6s %-5s %-4s %s\n", rank, 99 - f[38], pid, pid, tid, pn, f[38], f[17], f[37], comm }' \
+    | sort -k1,1n -k2,2n -k3,3n | cut -d' ' -f4- | sed 's/^/ /' > "$TMPF"
 cat "$TMPF"
 echo "  total: $(wc -l < "$TMPF" | tr -d ' ') threads"
 
