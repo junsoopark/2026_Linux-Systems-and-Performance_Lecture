@@ -36,13 +36,16 @@ git show <commit>:study/sched_profile/sched_profile.sh | ssh root@<device_ip> 's
 
 시리얼 콘솔 등에서는 디바이스에 `cat > /tmp/sp.sh` 입력 후 스크립트 내용을 붙여넣고 Ctrl-D, `sh /tmp/sp.sh`. 출력이 ASCII라 콘솔 locale과 무관하다.
 
-**3) GitHub 공개 URL (공개 fork의 `study` 브랜치가 남아 있는 동안만)**
+**3) GitHub 공개 URL — 스크립트 개발 중 기본 방법** (공개 fork의 `study` 브랜치가 남아 있는 동안만)
 
 ```bash
-URL=https://raw.githubusercontent.com/junsoopark/2026_Linux-Systems-and-Performance_Lecture/067ceadf7d0576d2cc56274cfc784eddc2555db7/study/sched_profile/sched_profile.sh
+URL=https://raw.githubusercontent.com/junsoopark/2026_Linux-Systems-and-Performance_Lecture/422cd174032cf4cd2d809115700135141da15cd9/study/sched_profile/sched_profile.sh
 curl -fsSL "$URL" | sh                          # 디바이스에 curl이 있을 때
+curl -fsSL "$URL" | sh -s -- <pid|process_name> # + 특정 process의 thread별 상세
 wget -qO- "$URL" | sh                           # wget만 있을 때 (HTTPS 미지원 빌드 주의)
 ```
+
+스크립트가 완성될 때까지는 GitHub 공개 fork에도 push하고 이 URL을 새 커밋으로 갱신한다. 완성 후에는 1) ssh 방식이나 공개 snippet으로 옮긴다.
 
 GitHub fork의 `study` 브랜치를 지우면 이 URL은 동작하지 않을 수 있다.
 
