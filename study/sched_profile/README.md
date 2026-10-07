@@ -6,6 +6,9 @@ webOS 등 타겟 보드에서 성능 이슈를 분석하기 전에 **이 보드�
 - POSIX sh 스크립트: busybox ash, dash, bash에서 동작 (busybox ash, dash로 검증)
 - `/proc`, `/sys`만 **읽는다**. 시스템 설정을 바꾸지 않는다.
 - root로 실행해야 볼 수 있는 항목: debugfs(`/sys/kernel/debug/sched`)의 `base_slice_ns`, `preempt`, `features`. 일반 사용자는 "(no permission)"으로 표시된다.
+- **출력은 ASCII(영어)만 사용**한다. 임베디드 보드는 셸 locale이 UTF-8이 아닌 경우가 많아서(`LANG=C`), 한글을 출력하면 깨진다. 설명은 이 README에만 둔다.
+- 외부 명령은 busybox 기본 명령(`awk`, `sed`, `grep`, `tr`, `cut`, `sort`, `wc`)만 쓴다. `fold`, `paste`처럼 빠져 있는 경우가 있는 명령은 쓰지 않는다.
+- kernel config가 없는 보드에서도 HZ를 알 수 있도록, root면 `/proc/timer_list`의 jiffies를 1초 간격으로 두 번 읽어 **HZ를 실측**한다.
 
 ## 다운로드 없이 바로 실행
 
@@ -15,7 +18,7 @@ GitHub의 raw URL을 받아 셸에 바로 넘긴다. 파일이 디바이스에 �
 - 최신 버전을 쓰려면 URL의 커밋 해시를 브랜치 이름 `study`로 바꾼다.
 
 ```bash
-URL=https://raw.githubusercontent.com/junsoopark/2026_Linux-Systems-and-Performance_Lecture/69fa8dc92b737f1a9b04064bdf8466b82c87ab17/study/sched_profile/sched_profile.sh
+URL=https://raw.githubusercontent.com/junsoopark/2026_Linux-Systems-and-Performance_Lecture/067ceadf7d0576d2cc56274cfc784eddc2555db7/study/sched_profile/sched_profile.sh
 ```
 
 **1) 디바이스에 curl이 있을 때**
@@ -54,7 +57,7 @@ curl -fsSL "$URL" | sudo sh                     # sudo가 있는 환경
 
 | 섹션 | 내용 | 무엇을 판단하나 |
 | --- | --- | --- |
-| 1. kernel | kernel 버전, CFS/EEVDF 구분, `CONFIG_HZ`, preempt 방식, sched 관련 config | tick 간격, 선점 방식, scheduler 알고리즘 |
+| 1. kernel | kernel 버전, CFS/EEVDF 구분, `CONFIG_HZ`(config 없으면 jiffies로 HZ 실측), preempt 방식, sched 관련 config | tick 간격, 선점 방식, scheduler 알고리즘 |
 | 2. scheduler tunables | `/proc/sys/kernel/sched_*`, RT throttling, debugfs의 slice 관련 값과 features, sched_ext, nice→weight 표 | slice 길이(경쟁 시 frame 지연 크기), RT task 실행 상한 |
 | 3. CPU | core 구성, core별 `cpu_capacity`(big.LITTLE), cpufreq governor·주파수, cache, cpuidle 상태별 깨어남 지연 | core 간 성능 차이, 절전으로 인한 wakeup 지연 |
 | 4. cgroup | v1/v2 구분, 그룹별 `cpu.weight`/`cpu.max`/`cpuset.cpus`/`uclamp.min` (v1은 `cpu.shares` 등). 기본값과 다른 그룹에 `*` 표시 | player가 속한 그룹에 제한이 걸려 있는지 |
