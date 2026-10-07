@@ -77,6 +77,12 @@ study/WeekN/
 | `Week1/Lab1/bin/` | 없음 → `make`로 생성 | 빌드 산출물 |
 | `Week3/Lab3/service_log_dataset/` | symlink → 원본 | 51MB 읽기 전용 데이터, 복사 불필요 |
 
+## 도구
+
+| 경로 | 설명 |
+| --- | --- |
+| `sched_profile/` | 타겟 디바이스의 scheduling 속성(kernel, slice, CPU, cgroup, RT thread, process별 대기 시간) 수집 스크립트. 다운로드 없이 실행하는 방법은 해당 README 참고 |
+
 ## 진행 현황
 
 | 주차 | 주제 | 정리 | Lab | 과제 |
