@@ -1,0 +1,21 @@
+### run 1
+pid=962066 name=pair duration=10.0s threads=2
+TIDS=962067,962068
+idx spec                           cg         tid  cpu   cpu_ms  exec_ms  wait_ms pcount   vol  invol     rounds    iters late_p99u   miss
+0   busy,cpu=0                     -       962067    0   8079.2   8079.2   1921.7   1585     0   1585    2267132        0       0.0      0
+1   periodic:16667:4000,cpu=0      -       962068    0   1910.5   1910.5   1899.3   1225   600    625     535687      600     644.0      0
+total cpu_ms=9989.6  (1.00 CPUs over 10.0s)
+### run 2
+pid=962084 name=pair duration=10.0s threads=2
+TIDS=962085,962086
+idx spec                           cg         tid  cpu   cpu_ms  exec_ms  wait_ms pcount   vol  invol     rounds    iters late_p99u   miss
+0   busy,cpu=0                     -       962085    0   8076.0   8076.0   1924.0   1643     0   1643    2260901        0       0.0      0
+1   periodic:16667:4000,cpu=0      -       962086    0   1912.8   1912.8   1911.3   1228   600    628     536131      600     578.0      0
+total cpu_ms=9988.8  (1.00 CPUs over 10.0s)
+### run 3
+pid=962103 name=pair duration=10.0s threads=2
+TIDS=962104,962105
+idx spec                           cg         tid  cpu   cpu_ms  exec_ms  wait_ms pcount   vol  invol     rounds    iters late_p99u   miss
+0   busy,cpu=0                     -       962104    0   8093.4   8093.4   1906.7   1653     0   1653    2260124        0       0.0      0
+1   periodic:16667:4000,cpu=0      -       962105    0   1897.2   1897.2   1886.3   1224   600    624     528277      600     901.6      0
+total cpu_ms=9990.5  (1.00 CPUs over 10.0s)
