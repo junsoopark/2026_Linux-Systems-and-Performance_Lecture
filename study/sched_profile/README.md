@@ -39,7 +39,7 @@ git show <commit>:study/sched_profile/sched_profile.sh | ssh root@<device_ip> 's
 **3) GitHub 공개 URL — 스크립트 개발 중 기본 방법** (공개 fork의 `study` 브랜치가 남아 있는 동안만)
 
 ```bash
-URL=https://raw.githubusercontent.com/junsoopark/2026_Linux-Systems-and-Performance_Lecture/4d6452a1b495ed338dc03a4ab61754a9edb72f0e/study/sched_profile/sched_profile.sh
+URL=https://raw.githubusercontent.com/junsoopark/2026_Linux-Systems-and-Performance_Lecture/672f3078bb35da25d116665c84b5fc3597e706b2/study/sched_profile/sched_profile.sh
 curl -fsSL "$URL" | sh                          # 디바이스에 curl이 있을 때
 curl -fsSL "$URL" | sh -s -- <pid|process_name> # + 특정 process의 thread별 상세
 wget -qO- "$URL" | sh                           # wget만 있을 때 (HTTPS 미지원 빌드 주의)
