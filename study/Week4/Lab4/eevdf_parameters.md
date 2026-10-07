@@ -1,7 +1,7 @@
 # EEVDF scheduling 파라미터: 고정값, 근거, 연쇄 계산
 
 > 실습 3(`lab3_scheduling_record.md`)과 `study/sched_profile` 측정값을 kernel 소스로 검증한 정리.
-> 소스 확인일: 2026-10-07. 근거는 `kernel/sched/fair.c`, `features.h`, `syscalls.c`의 v6.6 / v6.12 / master(7.3 개발 중).
+> 소스 확인일: 2026-10-07 (0.75 유래·3절은 2026-10-08). 근거는 `kernel/sched/fair.c`, `features.h`, `syscalls.c`의 v6.5(CFS) / v6.6 / v6.12 / master(7.3 개발 중).
 
 ## 1. 실측 예
 
@@ -27,6 +27,25 @@
 | 6.15 ~ (7.x 포함) | **0.70 ms** | `fair.c`: `= 700000ULL;` (master L85). 커밋 [`2ae891b`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=2ae891b826958b60919ea21c727f77bcd6ffcc2c) "sched: Reduce the default slice to avoid tasks getting an extra tick" |
 
 6.6은 EEVDF가 도입된 버전으로, 이전 CFS의 `sched_min_granularity`가 `sched_base_slice`로 이름이 바뀌었다.
+
+**0.75의 유래: CFS의 "6 ms ÷ 8"** (v6.5 `fair.c`로 확인)
+
+CFS에는 기본값 세 개가 묶여 있었다. 소스 주석: `sched_nr_latency` = "kept at `sysctl_sched_latency / sysctl_sched_min_granularity`".
+
+| 변수 (CFS) | 기본값 | 의미 |
+| --- | --- | --- |
+| `sysctl_sched_latency` | 6 ms | 실행 가능한 task가 모두 한 번씩 도는 주기 (목표 지연) |
+| `sched_nr_latency` | 8 | 이 주기 안에 담을 task 수 |
+| `sysctl_sched_min_granularity` | **0.75 ms** = 6 / 8 | task 하나의 최소 연속 실행 시간. task가 8개를 넘으면 주기를 0.75 ms × N으로 늘림 |
+
+| 시기 | 커밋 | latency | min_gran | nr_latency | 이유 |
+| --- | --- | --- | --- | --- | --- |
+| 2010-03 | [`21406928`](https://lkml.iu.edu/1003.1/01763.html) (Mike Galbraith) | 5 → **6 ms** | 1 → 2 ms | 5 → 3 | LAST_BUDDY를 빨리 동작시켜 cache 효율 향상 (tbench 약 2%) |
+| 2010-09 (2.6.36) | [`0bf377bb`](https://zircon-guest.googlesource.com/third_party/linux/+/0bf377bbb0bea6130f35613491887cc622e42a8b) (Ingo Molnar) | 6 ms | 2 → **0.75 ms** | 3 → **8** | `make -j10` 부하에서 지연이 큼 (Mathieu Desnoyers, Linus 보고). granularity가 너무 굵어 6 ms 목표를 못 지킴. 최대 지연 38,279 → 22,702 µs, 평균 7,730 → 6,685 µs |
+| 2023 (6.6) | EEVDF 도입 | 없어짐 | 이름만 `base_slice`, **값 0.75 유지** | 없어짐 | |
+| 2025 (6.15) | `2ae891b` | | 0.75 → **0.70 ms** | | tick 경계 문제 (아래) |
+
+→ 0.75는 EEVDF에 맞춰 새로 정한 값이 아니라 CFS의 "목표 지연 6 ms를 8개로 나눈 최소 단위"를 그대로 물려받은 값이다. EEVDF에는 목표 지연(latency)과 nr_latency 개념이 없으므로 의미가 "한 번에 요청하는 실행량"으로 바뀌었다(3절). 처음 다시 검토된 것이 6.15의 0.70 변경이고, 이유도 공정성이 아니라 tick 정밀도였다.
 
 커밋 `2ae891b`의 설명 (요지):
 - tick은 예상보다 조금 일찍 도착하는 경우가 많아서(clockevent 정밀도, IRQ 시간 회계), slice = 정확히 N tick이면 deadline 직전 tick에서 판정이 안 되고 **한 tick을 더 실행**한다. (예: HZ 1000, 8 CPU, slice 3ms → 실제 4ms)
@@ -96,7 +115,60 @@ static void rq_offline_fair(struct rq *rq) { update_sysctl(); ... }  // CPU offl
 
 → 6.12부터 개별 slice(`PREEMPT_SHORT` + `custom_slice`)와 delayed dequeue가 들어왔다. 6.6 보드에서는 개별 slice 방법을 쓸 수 없다.
 
-## 3. 연쇄 계산: 값이 결정되는 순서
+## 3. base slice의 의미: "한 번에 요청하는 실행량"
+
+### 3.1 EEVDF 모델에서의 위치
+
+EEVDF(Stoica 1995)에서 task i는 CPU 시간을 **요청(request) 단위**로 받는다. 요청 하나의 크기가 r_i이고 kernel에서는 `se->slice`이다. 소스 주석(`update_deadline`): "the virtual time slope is determined by w_i (iow. nice) while the request time r_i is determined by sysctl_sched_base_slice".
+
+| 기호 | kernel 변수 | 의미 |
+| --- | --- | --- |
+| r_i | `se->slice` | 요청 하나의 실제 실행량 (기본 = `sysctl_sched_base_slice`) |
+| w_i | `se->load.weight` | nice/cgroup weight. 가상 시간이 흐르는 속도를 정함 |
+| v_i | `se->vruntime` | 받은 실행량 (가상 시간). 실제 실행 Δt마다 Δt × 1024 / w_i 증가 |
+| V | `avg_vruntime()` | runqueue 전체의 weight 가중 평균 vruntime = "공정하게 받았어야 할 양" |
+| lag | `V − v_i` | 덜 받은 양. 0 이상이면 **eligible**(실행 자격 있음, `entity_eligible`) |
+| vd_i | `se->deadline` | 요청이 끝나야 할 가상 시각 = v_i + r_i × 1024 / w_i |
+
+scheduler의 선택 규칙은 하나다. **eligible한 task 중 deadline이 가장 이른 task**(Earliest Eligible Virtual Deadline First)를 고른다.
+
+### 3.2 slice가 쓰이는 곳 (v6.12 `fair.c`)
+
+| 시점 | 함수 | slice의 역할 |
+| --- | --- | --- |
+| 깨어날 때·새로 생길 때 | `place_entity()` | `vruntime = V − lag`로 배치한 뒤 `deadline = vruntime + vslice`. 새 task(`ENQUEUE_INITIAL`)는 `PLACE_DEADLINE_INITIAL`로 vslice를 절반만 줌 ("기존 task들은 평균적으로 slice의 절반쯤 와 있다") |
+| 실행 중 (tick) | `update_curr()` → `update_deadline()` | `vruntime >= deadline`이면 **요청 소진**. `se->slice`를 base slice로 다시 읽고 새 deadline을 잡은 뒤 resched ("The task has consumed its request, reschedule") |
+| 다음 task 고르기 | `pick_eevdf()` | eligible한 것 중 deadline 최소. 같은 weight라면 **slice가 짧을수록 deadline이 가까워** 먼저 뽑힘 |
+| 고른 뒤 보호 | `set_next_entity()` + `RUN_TO_PARITY` | 고른 순간의 deadline까지 (= 요청 하나를 다 쓸 때까지) wakeup 선점을 막음 (5절) |
+| wakeup 선점 | `do_preempt_short()` (`PREEMPT_SHORT`, 6.12+) | 깨어난 task의 slice가 현재 task보다 **짧을 때만** 위 보호를 해제 |
+| lag 저장 상한 | `entity_lag()` | ± max(2 × slice, 1 tick) → 오래 자고 일어나도 2 slice 이상의 보상은 못 받음 |
+
+`update_deadline()`과 `place_entity()`가 매번 `se->slice = sysctl_sched_base_slice`로 다시 읽으므로, sysctl이나 CPU hotplug로 base slice가 바뀌면 **각 task의 다음 요청부터** 적용된다. `custom_slice`(sched_setattr)인 task만 자기 값을 유지한다.
+
+### 3.3 slice가 바꾸는 것과 바꾸지 않는 것
+
+| | 정하는 값 | 결과 |
+| --- | --- | --- |
+| **CPU 몫** (장기 비율) | weight (nice, cgroup `cpu.weight`) | V를 기준으로 lag이 0 근처에 머물도록 수렴하므로 비율은 weight로만 정해진다 |
+| **한 번에 도는 길이 / 차례가 오는 시점** | slice | 짧은 요청 = deadline이 가까워 빨리 뽑히지만 자주 끊김 (지연↓, 문맥 교환↑). 긴 요청 = 늦게 뽑히지만 한 번에 오래 돎 (지연↑, cache 효율↑) |
+
+CFS의 `min_granularity`는 "이보다 짧게는 끊지 않는다"는 **하한**이었다. EEVDF의 slice는 "이만큼을 한 번의 요청으로 달라"는 **요청 크기**이고, 그 크기가 곧 deadline을 정해 선택 순서에 들어간다. 그래서 task마다 다르게 줄 수 있고(6.12+ `custom_slice`), 짧게 주는 것이 "지연에 민감하다"는 신호가 된다.
+
+### 3.4 예: 주기 thread가 깨어날 때 (실습 3 상황)
+
+같은 CPU에서 indexer(busy, nice 0)가 돌고 있고, renderer(nice 0)가 잠에서 깬다. 둘 다 weight 1024이므로 vslice = slice. lag 0으로 깬다고 가정한다.
+
+| | renderer slice = base (2.25 ms) | renderer slice = 1 ms (`sched_setattr`, 6.12+) |
+| --- | --- | --- |
+| renderer deadline | V + 2.25 | V + 1 |
+| indexer deadline | 고를 때 v ≤ V였으므로 ≤ V + 2.25 | 같음 |
+| `pick_eevdf` | `RUN_TO_PARITY` 표시가 남아 있으면 indexer 유지. 표시가 없어도 indexer deadline이 같거나 더 이름 | renderer deadline이 더 이를 가능성이 큼 |
+| `PREEMPT_SHORT` | slice가 같으므로 보호 해제 안 됨 | 1 < 2.25 → 보호 해제 |
+| 결과 | indexer가 요청을 다 쓸 때까지 대기 (tick 단위로 최대 약 4 ms, HZ 250) | 즉시 선점 가능 |
+
+→ "요청 크기"가 짧다는 것은 "덜 받겠다"가 아니라 **"조금씩 자주, 대신 빨리 달라"**는 뜻이다. CPU 몫을 늘리려면 weight를, 깨어난 직후의 대기를 줄이려면 slice를 조정한다.
+
+## 4. 연쇄 계산: 값이 결정되는 순서
 
 보드 A 숫자로 따라가면 (nice 0 task 둘이 같은 CPU에서 경쟁):
 
@@ -137,7 +209,7 @@ tick 1 ms 단위로 올림 → 약 3 ms → 실습 3 실측 연속 실행 3.17 m
 
 실제 slice 길이(한 번에 도는 시간)는 nice와 무관하게 2.25 ms이고, **얼마나 자주 차례가 오는지**가 weight로 바뀐다.
 
-## 4. 선점이 결정되는 두 경로 (v6.12 소스)
+## 5. 선점이 결정되는 두 경로 (v6.12 소스)
 
 **(1) tick 경로** — `update_curr()`
 
@@ -170,7 +242,7 @@ if (pick_eevdf(cfs_rq) == pse)                  // 깨어난 task가 최선이�
 
 → **같은 slice끼리는 깨어난 task가 현재 task의 slice 보호를 깰 수 없다.** 보드 A에서는 최악의 경우 현재 task의 남은 slice(tick 단위로 최대 약 4 ms)만큼 기다린다.
 
-## 5. 현업 적용
+## 6. 현업 적용
 
 | 상황 | 판단 | 근거 |
 | --- | --- | --- |
@@ -188,3 +260,6 @@ if (pick_eevdf(cfs_rq) == pse)                  // 깨어난 task가 최선이�
 - [features.h v6.12](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/kernel/sched/features.h?h=v6.12), [features.h master](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/kernel/sched/features.h)
 - [syscalls.c v6.12](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/kernel/sched/syscalls.c?h=v6.12) — `__setscheduler_params()`의 custom slice
 - [커밋 2ae891b](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=2ae891b826958b60919ea21c727f77bcd6ffcc2c) — 0.75 → 0.70 ms (v6.15)
+- [fair.c v6.5](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/kernel/sched/fair.c?h=v6.5) — CFS 마지막 버전의 `sysctl_sched_latency`(6 ms), `sched_nr_latency`(8), `sysctl_sched_min_granularity`(0.75 ms)
+- [커밋 0bf377bb](https://zircon-guest.googlesource.com/third_party/linux/+/0bf377bbb0bea6130f35613491887cc622e42a8b) — min_granularity 2 → 0.75 ms, nr_latency 3 → 8 (2.6.36), [LKML 패치](https://lkml.iu.edu/hypermail/linux/kernel/1009.1/02269.html)
+- [커밋 21406928](https://lkml.iu.edu/1003.1/01763.html) — latency 5 → 6 ms (2010-03)
