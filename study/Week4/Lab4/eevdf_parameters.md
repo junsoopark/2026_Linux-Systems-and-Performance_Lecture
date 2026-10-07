@@ -104,7 +104,7 @@ static void rq_offline_fair(struct rq *rq) { update_sysctl(); ... }  // CPU offl
 [빌드]   CONFIG_HZ = 250                      → tick = 4 ms
 [부팅]   online CPU = 4
          factor = 1 + ilog2(min(4, 8)) = 3    (tunable_scaling = LOG)
-         base_slice = 0.75 ms x 3 = 2.25 ms   (6.12 기준값 0.75)
+         base_slice = 0.75 ms x 3 = 2.25 ms   (kernel 6.12의 기준값 0.75 ms, 6.6~6.14 공통)
 [task]   se.slice = base_slice = 2.25 ms      (custom_slice가 아니면, place_entity/update_deadline에서 매번 갱신)
          vslice = slice x 1024 / weight       (calc_delta_fair)
                 = 2.25 ms                      (nice 0, weight 1024)
