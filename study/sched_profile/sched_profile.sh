@@ -80,7 +80,10 @@ if [ -r /proc/timer_list ]; then
     sleep 1
     j2=$(awk '/^jiffies:/ { print $2; exit }' /proc/timer_list 2>/dev/null)
     if [ -n "$j1" ] && [ -n "$j2" ]; then
-        kv "HZ (approx)" "$((j2 - j1))  (tick = $((1000 / (j2 - j1 > 0 ? j2 - j1 : 1))) ms; expect 100/250/300/1000)"
+        kv "HZ (approx)" "$(awk -v d=$((j2 - j1)) 'BEGIN {
+            n = 100; split("100 250 300 1000", c, " ")
+            for (i = 1; i <= 4; i++) if ((d - c[i]) * (d - c[i]) < (d - n) * (d - n)) n = c[i]
+            printf "%d measured -> likely CONFIG_HZ=%d (tick %.1f ms)", d, n, 1000 / n }')"
     else
         kv "HZ (approx)" "(jiffies not found in /proc/timer_list)"
     fi
