@@ -49,6 +49,8 @@ trap 'rm -f "$TMPF"' EXIT
 hr "1. kernel"
 kv "date" "$(date 2>/dev/null)"
 kv "hostname" "$(rd /proc/sys/kernel/hostname)"
+UPT=$(awk '{ printf "%d", $1 }' /proc/uptime 2>/dev/null)
+kv "uptime" "${UPT:-?} s ($(awk -v u="${UPT:-0}" 'BEGIN { printf "%.1f h", u / 3600 }'))"
 kv "uname -a" "$(uname -a 2>/dev/null)"
 krel=$(uname -r 2>/dev/null)
 kmaj=$(echo "$krel" | cut -d. -f1); kmin=$(echo "$krel" | cut -d. -f2 | tr -dc '0-9')
@@ -205,13 +207,16 @@ else
 fi
 
 sub "autogroup (if on, nice compares only within the same session group)"
-show "sched_autogroup_enabled" /proc/sys/kernel/sched_autogroup_enabled
+if [ -e /proc/sys/kernel/sched_autogroup_enabled ]; then show "sched_autogroup_enabled" /proc/sys/kernel/sched_autogroup_enabled
+else kv "sched_autogroup_enabled" "(not built: nice compares system-wide)"; fi
 
 sub "sched domains (load balancing scope, debugfs)"
 if [ -d "$D/domains/cpu0" ]; then
     for d in "$D"/domains/cpu0/domain*; do
         [ -d "$d" ] && kv "  cpu0 ${d##*/}" "name=$(rd "$d/name") flags=$(rd "$d/flags" | cut -c1-80)"
     done
+elif [ -r "$D" ]; then
+    echo "  (not present in this kernel's debugfs)"
 else
     echo "  (not readable: run as root)"
 fi
@@ -263,13 +268,13 @@ done
 sub "IRQ (interrupt time steals CPU from tasks on that CPU)"
 kv "default_smp_affinity" "$(rd /proc/irq/default_smp_affinity)"
 if [ -r /proc/interrupts ]; then
-    echo "  top 10 IRQs by total count (per-CPU counts):"
+    echo "  top 10 IRQs by total count (per-CPU counts, average rate since boot = total / uptime)"
     awk 'NR == 1 { nc = NF; next }
          { t = 0; per = ""; for (i = 2; i <= nc + 1 && i <= NF; i++) { if ($i !~ /^[0-9]+$/) break; t += $i; per = per " " $i }
            desc = ""; for (j = i; j <= NF; j++) desc = desc " " $j
            if (t > 0) printf "%d|%s|%s|%s\n", t, $1, per, desc }' /proc/interrupts \
         | sort -t'|' -k1,1nr | head -n 10 \
-        | awk -F'|' '{ printf "  %-8s total=%-12s cpus:%s  %s\n", $2, $1, $3, substr($4, 1, 50) }'
+        | awk -F'|' -v u="${UPT:-0}" '{ r = (u > 0) ? sprintf("%.1f/s", $1 / u) : "?/s"; printf "  %-8s total=%-12s %-10s cpus:%s  %s\n", $2, $1, r, $3, substr($4, 1, 50) }'
 fi
 
 # ------------------------------------------------------------------ 4
