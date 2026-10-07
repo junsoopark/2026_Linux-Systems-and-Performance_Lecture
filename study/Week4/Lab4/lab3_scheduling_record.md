@@ -585,13 +585,13 @@ base_slice = normalized_base x factor
 factor (tunable_scaling): 0 NONE = 1
                           1 LOG  = 1 + log2(min(online CPU 수, 8))   <- 기본값
                           2 LINEAR = min(online CPU 수, 8)
-normalized_base: 0.75ms (6.6 도입 시), 이 PC의 kernel 7.0에서는 0.70ms
+normalized_base: 0.75ms (6.6 ~ 6.14), 0.70ms (6.15 ~, 이 PC의 7.0 포함)
 ```
 
 - CPU가 많을수록 slice를 길게 → CPU당 경쟁이 줄어드는 만큼 task 교체 비용을 줄이려는 설계. CPU hotplug 때 다시 계산되고, debugfs에 직접 쓰면 공식과 달라진다.
 - 예: CPU 4개, LOG → factor 3 → 0.75 × 3 = **2.25ms**
 
-**정정 (이 PC)**: 앞의 Q&A들은 slice를 0.75 × 4 = 3ms로 가정했다. 그런데 `/proc/self/sched`의 `se.slice`를 읽어 보니 **2.8ms** = 0.70 × 4 였다. kernel 7.0에서 기준값이 0.70ms로 바뀐 것으로 보인다.
+**정정 (이 PC)**: 앞의 Q&A들은 slice를 0.75 × 4 = 3ms로 가정했다. 그런데 `/proc/self/sched`의 `se.slice`를 읽어 보니 **2.8ms** = 0.70 × 4 였다. kernel 6.15에서 기준값이 0.70ms로 바뀌었다 (커밋 `2ae891b`, 소스로 확인).
 - 실측 연속 실행 3.17ms와 비교하면: slice 2.8ms가 끝나도 tick(1ms) 경계에서 교체되므로 실제 연속 실행 = 2.8ms를 1ms 단위로 올린 **약 3ms** + 교체 처리 → 3.17ms. "3ms slice" 가정보다 이 설명이 더 정확하다.
 - 앞의 "6.4ms" 분석의 결론(slice 1회분만큼 밀린다)은 그대로 유효하고, 숫자의 근거만 "slice 3ms" → "slice 2.8ms가 tick 단위로 올림된 약 3ms"로 바뀐다.
 
@@ -603,6 +603,8 @@ normalized_base: 0.75ms (6.6 도입 시), 이 PC의 kernel 7.0에서는 0.70ms
 | HZ 250 환경 예 | 2.25ms | 4ms | 약 4ms |
 
 → `study/sched_profile/sched_profile.sh` 섹션 2에서 이 유도를 자동으로 계산한다 (root 없이도 `se.slice`로 가능).
+
+→ 버전별 고정값, 근거 소스, 연쇄 계산, 선점 경로 상세: [`eevdf_parameters.md`](eevdf_parameters.md)
 
 ## 현업 적용 포인트 (webOS 미디어 플레이어)
 

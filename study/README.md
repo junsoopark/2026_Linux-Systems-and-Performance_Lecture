@@ -70,7 +70,7 @@ study/WeekN/
 
 | `WeekN/LabN/src/*`, `tools/*` (원본에 없는 파일) | 추가 테스트 | 질문 검증용으로 직접 만든 코드. 파일 상단에 `[study 추가]` 표기 |
 
-현재 별도 실습 문서: `Week4/Lab4/lab3_scheduling_record.md` (실습 3 scheduling 지연 진단)
+현재 별도 실습 문서: `Week4/Lab4/lab3_scheduling_record.md` (실습 3 scheduling 지연 진단), `Week4/Lab4/eevdf_parameters.md` (EEVDF 파라미터 고정값·근거·연쇄 계산)
 
 현재 추가된 테스트 코드: `Week4/Lab4/src/ws_seq.c` (실습 1 Q1.2 순차 접근 비교), `Week4/Lab4/tools/lab3_run.sh` (실습 3 단계 2~7 자동 실행)
 

@@ -144,7 +144,7 @@ else kv "sched_ext state" "(not built)"; fi
 sub "base slice derivation (kernel/sched/fair.c update_sysctl)"
 echo "  base_slice = normalized_base x factor"
 echo "  factor by tunable_scaling: 0 NONE=1, 1 LOG=1+log2(min(ncpu,8)) (default), 2 LINEAR=min(ncpu,8)"
-echo "  normalized_base default: 0.75 ms (6.6+), 0.70 ms on newer kernels"
+echo "  normalized_base default: 0.75 ms (6.6-6.14), 0.70 ms (6.15+, commit 2ae891b)"
 ncpu=$(rd /sys/devices/system/cpu/online | tr ',' '\n' | awk -F- '{ n += ($2 == "" ? 1 : $2 - $1 + 1) } END { print n + 0 }')
 ts=$(cat "$D/tunable_scaling" 2>/dev/null); tsnote=""
 [ -z "$ts" ] && { ts=1; tsnote=" (assumed default, debugfs unreadable)"; }

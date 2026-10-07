@@ -82,4 +82,5 @@ ssh root@<device_ip> 'sh -s -- <player_process_name>' < $S > t1.txt
 ## 참고
 
 - 각 항목의 의미: `../Week4/Lab4/lab3_scheduling_record.md`의 "실제 디바이스에서 먼저 파악할 보드 특성 체크리스트"
+- slice·factor·HZ의 버전별 고정값과 연쇄 계산 근거: `../Week4/Lab4/eevdf_parameters.md`
 - `/proc/<tid>/schedstat`의 wait 값은 kernel에 `CONFIG_SCHED_INFO`가 있어야 채워진다. 0만 나오면 섹션 1의 config를 확인한다.
